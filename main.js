@@ -1,3 +1,5 @@
+import { loadModel, isReady, classify } from './yamnet.js';
+
 // ── DOM refs ────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 const micSelect = $('mic-select'), gainSlider = $('gain-slider'), gainValue = $('gain-value');
@@ -17,6 +19,7 @@ const presetSelect = $('preset-select'), loadPresetBtn = $('load-preset-btn');
 const savePresetBtn = $('save-preset-btn'), deletePresetBtn = $('delete-preset-btn');
 const cryToggle = $('cry-toggle'), cryDurationSlider = $('cry-duration-slider'), cryDurationValue = $('cry-duration-value');
 const cryStatusCard = $('cry-status-card'), cryIcon = $('cry-icon'), cryLabel = $('cry-label'), cryDetail = $('cry-detail'), cryMeterBar = $('cry-meter-bar');
+const modelBadge = $('model-badge');
 const sleepStageCard = $('sleep-stage-card'), sleepIcon = $('sleep-icon'), sleepLabel = $('sleep-label'), sleepDetail = $('sleep-detail');
 const avgBpmValue = $('avg-bpm-value'), avgIntervalValue = $('avg-interval-value'), breathVariabilityValue = $('breath-variability-value');
 const waveformCanvas = $('waveform-canvas'), spectrumCanvas = $('spectrum-canvas'), historyCanvas = $('history-canvas');
@@ -32,6 +35,13 @@ let cryStartTime=0, isCrying=false, cryAlertFired=false;
 const HISTORY_LENGTH = 600;
 const STORAGE_KEY = 'bbm_presets';
 let sleepInterval = null;
+
+// ── YAMNet state ────────────────────────────────────────────────
+let rawAudioBuffer = null, rawBufferPos = 0, rawSampleRate = 48000;
+let scriptNode = null, silentGainNode = null, yamnetInterval = null;
+let consecutiveCryFrames = 0;
+const YAMNET_INTERVAL_MS = 1500; // run inference every 1.5s
+const CRY_SCORE_THRESHOLD = 0.12;
 // Moving average: store detected breath timestamps for 5-min window
 // Sleep stage is estimated every 10s from this data
 
@@ -79,7 +89,7 @@ function dismissAlert() {
 
 async function startAudio() {
   const deviceId = micSelect.value;
-  if(!deviceId) { alert('Select a microphone first.'); return; }
+  if(!deviceId) { alert('Selecione um microfone primeiro.'); return; }
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId:{exact:deviceId}, echoCancellation:false, noiseSuppression:false, autoGainControl:false } });
     audioContext = new (window.AudioContext||window.webkitAudioContext)();
@@ -91,28 +101,54 @@ async function startAudio() {
     analyserRaw = audioContext.createAnalyser(); analyserRaw.fftSize=4096; analyserRaw.smoothingTimeConstant=0.8;
     sourceNode.connect(highpassFilter); highpassFilter.connect(lowpassFilter); lowpassFilter.connect(gainNode); gainNode.connect(analyserFiltered); sourceNode.connect(analyserRaw);
     if(monitorToggle.checked) gainNode.connect(audioContext.destination);
+
+    // Raw audio buffer for YAMNet (2 seconds circular buffer)
+    rawSampleRate = audioContext.sampleRate;
+    rawAudioBuffer = new Float32Array(rawSampleRate * 2);
+    rawBufferPos = 0;
+    scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
+    sourceNode.connect(scriptNode);
+    silentGainNode = audioContext.createGain();
+    silentGainNode.gain.value = 0;
+    scriptNode.connect(silentGainNode);
+    silentGainNode.connect(audioContext.destination);
+    scriptNode.onaudioprocess = (e) => {
+      const inp = e.inputBuffer.getChannelData(0);
+      for (let i = 0; i < inp.length; i++) {
+        rawAudioBuffer[rawBufferPos] = inp[i];
+        rawBufferPos = (rawBufferPos + 1) % rawAudioBuffer.length;
+      }
+    };
+
     isRunning=true; lastBreathTime=performance.now(); breathTimestamps=[]; breathHistory=new Array(HISTORY_LENGTH).fill(0); alertFired=false;
-    cryStartTime=0; isCrying=false; cryAlertFired=false;
-    startBtn.textContent='⏹ Stop Monitoring'; startBtn.classList.add('active'); statusDot.classList.add('active');
+    cryStartTime=0; isCrying=false; cryAlertFired=false; consecutiveCryFrames=0;
+    startBtn.textContent='⏹ Parar Monitoramento'; startBtn.classList.add('active'); statusDot.classList.add('active');
     autodetectBtn.disabled=false;
     resizeAllCanvases(); updateThresholdLine(); drawLoop();
     historyInterval = setInterval(()=>{ if(!isRunning||!analyserFiltered) return; breathHistory.push(getFilteredAmplitude()); if(breathHistory.length>HISTORY_LENGTH) breathHistory.shift(); }, 100);
     sleepInterval = setInterval(() => { updateSleepStage(); updateTrend(); }, 10000);
-  } catch(e) { alert('Could not start: '+e.message); }
+
+    // YAMNet inference loop
+    yamnetInterval = setInterval(runYamnetInference, YAMNET_INTERVAL_MS);
+  } catch(e) { alert('Não foi possível iniciar: '+e.message); }
 }
 
 function stopAudio() {
   if(mediaStream) mediaStream.getTracks().forEach(t=>t.stop());
+  if(scriptNode) { scriptNode.disconnect(); scriptNode = null; }
+  if(silentGainNode) { silentGainNode.disconnect(); silentGainNode = null; }
   if(audioContext) audioContext.close();
   if(animationId) cancelAnimationFrame(animationId);
   if(historyInterval) clearInterval(historyInterval);
   if(sleepInterval) clearInterval(sleepInterval);
+  if(yamnetInterval) { clearInterval(yamnetInterval); yamnetInterval = null; }
   stopAlertSound(); isRunning=false;
-  startBtn.textContent='▶ Start Monitoring'; startBtn.classList.remove('active'); statusDot.classList.remove('active');
+  startBtn.textContent='▶ Iniciar Monitoramento'; startBtn.classList.remove('active'); statusDot.classList.remove('active');
   autodetectBtn.disabled=true;
-  breathStatusCard.className='card breath-status-card'; breathIcon.textContent='😴'; breathLabel.textContent='Stopped'; breathDetail.textContent='Press Start to begin monitoring';
+  breathStatusCard.className='card breath-status-card'; breathIcon.textContent='😴'; breathLabel.textContent='Parado'; breathDetail.textContent='Pressione Iniciar para começar';
   breathMeterBar.style.width='0%'; bpmValue.textContent='—'; lastBreathValue.textContent='—'; silenceValue.textContent='—';
-  cryStatusCard.className='card cry-status-card'; cryIcon.textContent='🤫'; cryLabel.textContent='Quiet'; cryDetail.textContent='No crying detected'; cryMeterBar.style.width='0%';
+  cryStatusCard.className='card cry-status-card'; cryIcon.textContent='🤫'; cryLabel.textContent='Silencioso'; cryDetail.textContent='Nenhum choro detectado'; cryMeterBar.style.width='0%';
+  consecutiveCryFrames = 0;
 }
 
 // ── Breath detection ────────────────────────────────────────────
@@ -127,76 +163,118 @@ function processBreathDetection(amp) {
   if(amp>thr) { breathMeterBar.style.background='var(--accent-green)'; if(!isCurrentlyBreathing){isCurrentlyBreathing=true;lastBreathTime=now;breathTimestamps.push(now);breathTimestamps=breathTimestamps.filter(t=>now-t<60000);} }
   else { breathMeterBar.style.background='var(--text-dim)'; if(isCurrentlyBreathing&&amp<thr*0.6) isCurrentlyBreathing=false; }
   const bpm=breathTimestamps.filter(t=>now-t<60000).length; bpmValue.textContent=bpm>0?bpm:'—';
-  const ago=(now-lastBreathTime)/1000; lastBreathValue.textContent=ago<1?'now':`${ago.toFixed(0)}s ago`; silenceValue.textContent=`${ago.toFixed(0)}s`;
-  if(ago<alertSec*0.5){breathStatusCard.className='card breath-status-card ok';breathIcon.textContent='😴';breathLabel.textContent='Breathing OK';breathDetail.textContent=`${bpm} breaths in last minute`;if(alertFired){dismissAlert();}}
-  else if(ago<alertSec){breathStatusCard.className='card breath-status-card warn';breathIcon.textContent='😐';breathLabel.textContent='Getting quiet...';breathDetail.textContent=`No breath for ${ago.toFixed(0)}s`;}
-  else{breathStatusCard.className='card breath-status-card danger';breathIcon.textContent='🚨';breathLabel.textContent='No breath detected!';breathDetail.textContent=`Silent for ${ago.toFixed(0)}s`;if(!alertFired){alertFired=true;if(alertsToggle.checked)triggerAlert(alertSec);}}
+  const ago=(now-lastBreathTime)/1000; lastBreathValue.textContent=ago<1?'agora':`${ago.toFixed(0)}s atrás`; silenceValue.textContent=`${ago.toFixed(0)}s`;
+  if(ago<alertSec*0.5){breathStatusCard.className='card breath-status-card ok';breathIcon.textContent='😴';breathLabel.textContent='Respiração OK';breathDetail.textContent=`${bpm} respirações no último minuto`;if(alertFired){dismissAlert();}}
+  else if(ago<alertSec){breathStatusCard.className='card breath-status-card warn';breathIcon.textContent='😐';breathLabel.textContent='Ficando silencioso...';breathDetail.textContent=`Sem respirar há ${ago.toFixed(0)}s`;}
+  else{breathStatusCard.className='card breath-status-card danger';breathIcon.textContent='🚨';breathLabel.textContent='Respiração não detectada!';breathDetail.textContent=`Silêncio por ${ago.toFixed(0)}s`;if(!alertFired){alertFired=true;if(alertsToggle.checked)triggerAlert(alertSec);}}
 }
 
-// ── Cry detection ───────────────────────────────────────────────
-// Baby crying: LOUD + CONTINUOUS (no gaps). Breathing is periodic
-// with pauses. We check that amplitude stays above threshold
-// without ANY dip below it — breathing always dips between breaths.
-function getRawCryAmplitude() {
+// ── Cry detection (YAMNet AI) ────────────────────────────────────
+// Uses Google YAMNet (AudioSet) for accurate baby cry classification.
+// Runs every 1.5s on raw audio. Falls back to amplitude if model unavailable.
+let lastCryScore = 0;
+
+function getRawAudioChunk(seconds) {
+  if (!rawAudioBuffer) return null;
+  const numSamples = Math.floor(rawSampleRate * seconds);
+  const result = new Float32Array(numSamples);
+  for (let i = 0; i < numSamples; i++) {
+    const idx = (rawBufferPos - numSamples + i + rawAudioBuffer.length) % rawAudioBuffer.length;
+    result[i] = rawAudioBuffer[idx];
+  }
+  return result;
+}
+
+async function runYamnetInference() {
+  if (!isRunning || !cryToggle.checked) return;
+  const chunk = getRawAudioChunk(1.5);
+  if (!chunk) return;
+
+  if (isReady()) {
+    const result = await classify(chunk, rawSampleRate);
+    if (!result) return;
+    lastCryScore = result.score;
+    const pct = Math.min(result.score * 100 / 0.5, 100);
+    cryMeterBar.style.width = `${pct}%`;
+
+    if (result.score > CRY_SCORE_THRESHOLD) {
+      consecutiveCryFrames++;
+      const requiredFrames = Math.ceil(parseInt(cryDurationSlider.value) / (YAMNET_INTERVAL_MS / 1000));
+      if (consecutiveCryFrames >= requiredFrames) {
+        cryStatusCard.className = 'card cry-status-card crying';
+        cryIcon.textContent = '😭';
+        cryLabel.textContent = 'Bebê chorando!';
+        const secs = Math.round(consecutiveCryFrames * YAMNET_INTERVAL_MS / 1000);
+        cryDetail.textContent = `${result.label} — ${(result.bestRaw*100).toFixed(0)}% conf. — ${secs}s`;
+        if (!cryAlertFired && alertsToggle.checked) {
+          cryAlertFired = true;
+          alertMessage.textContent = `Bebê chorando! ${result.label} detectado por ${secs}s+ (confiança: ${(result.bestRaw*100).toFixed(0)}%)`;
+          alertOverlay.classList.add('visible');
+          playAlertSound();
+        }
+      } else {
+        cryStatusCard.className = 'card cry-status-card';
+        cryIcon.textContent = '👶';
+        cryLabel.textContent = 'Possível choro...';
+        const remaining = Math.ceil((requiredFrames - consecutiveCryFrames) * YAMNET_INTERVAL_MS / 1000);
+        cryDetail.textContent = `${result.label} (${(result.bestRaw*100).toFixed(0)}%) — confirmando em ${remaining}s`;
+      }
+    } else {
+      if (cryAlertFired) { dismissAlert(); }
+      consecutiveCryFrames = 0;
+      cryAlertFired = false;
+      cryStatusCard.className = 'card cry-status-card';
+      cryIcon.textContent = '🤫';
+      cryLabel.textContent = 'Silencioso';
+      cryDetail.textContent = `Nenhum choro — IA: ${(result.score*100).toFixed(1)}%`;
+    }
+  } else {
+    // Fallback: amplitude-based
+    processCryFallback();
+  }
+}
+
+function processCryFallback() {
+  if (!analyserRaw) return;
   const bufLen = analyserRaw.frequencyBinCount;
   const data = new Uint8Array(bufLen);
   analyserRaw.getByteFrequencyData(data);
   const sr = audioContext.sampleRate, ny = sr / 2;
-  // Baby cry: fundamental 400-600Hz + harmonics up to ~2500Hz
   const binLow = Math.floor((350 / ny) * bufLen);
   const binHigh = Math.floor((2500 / ny) * bufLen);
   let sum = 0, count = 0;
   for (let i = binLow; i < binHigh && i < bufLen; i++) { sum += data[i]; count++; }
-  return count > 0 ? sum / count : 0;
+  const amp = count > 0 ? sum / count : 0;
+  cryMeterBar.style.width = `${Math.min((amp / 180) * 100, 100)}%`;
+  if (amp > 120) {
+    consecutiveCryFrames++;
+    const requiredFrames = Math.ceil(parseInt(cryDurationSlider.value) / (YAMNET_INTERVAL_MS / 1000));
+    if (consecutiveCryFrames >= requiredFrames) {
+      cryStatusCard.className = 'card cry-status-card crying';
+      cryIcon.textContent = '😭'; cryLabel.textContent = 'Bebê chorando!';
+      cryDetail.textContent = 'Modo amplitude (IA indisponível)';
+      if (!cryAlertFired && alertsToggle.checked) {
+        cryAlertFired = true;
+        alertMessage.textContent = 'Bebê chorando! Choro contínuo detectado.';
+        alertOverlay.classList.add('visible'); playAlertSound();
+      }
+    } else {
+      cryIcon.textContent = '👶'; cryLabel.textContent = 'Som alto...';
+    }
+  } else {
+    if (cryAlertFired) { dismissAlert(); }
+    consecutiveCryFrames = 0; cryAlertFired = false;
+    cryStatusCard.className = 'card cry-status-card';
+    cryIcon.textContent = '🤫'; cryLabel.textContent = 'Silencioso'; cryDetail.textContent = 'Nenhum choro detectado';
+  }
 }
 
-let cryConsecutiveFrames = 0; // frames where amplitude stayed above threshold
-const CRY_FRAMES_PER_SEC = 15; // ~60fps / 4 (requestAnimationFrame rate)
-
+// Called from drawLoop — just updates UI for disabled state
 function processCryDetection() {
   if (!cryToggle.checked) {
     cryStatusCard.className = 'card cry-status-card';
-    cryIcon.textContent = '🤫'; cryLabel.textContent = 'Disabled'; cryDetail.textContent = 'Cry detection is off';
-    cryMeterBar.style.width = '0%'; isCrying = false; cryAlertFired = false; cryConsecutiveFrames = 0;
-    return;
-  }
-  const amp = getRawCryAmplitude();
-  // Crying is MUCH louder than breathing — high threshold
-  const CRY_THRESHOLD = 120;
-  const requiredDuration = parseInt(cryDurationSlider.value);
-  const requiredFrames = requiredDuration * CRY_FRAMES_PER_SEC;
-
-  cryMeterBar.style.width = `${Math.min((amp / 180) * 100, 100)}%`;
-
-  if (amp > CRY_THRESHOLD) {
-    // Must be CONTINUOUSLY above threshold (no gaps = not breathing)
-    cryConsecutiveFrames++;
-    const progress = Math.min(cryConsecutiveFrames / requiredFrames, 1);
-
-    if (cryConsecutiveFrames >= requiredFrames) {
-      cryStatusCard.className = 'card cry-status-card crying';
-      cryIcon.textContent = '😭'; cryLabel.textContent = 'Baby is crying!';
-      const secs = Math.floor(cryConsecutiveFrames / CRY_FRAMES_PER_SEC);
-      cryDetail.textContent = `Crying for ${secs}s`;
-      if (!cryAlertFired && alertsToggle.checked) {
-        cryAlertFired = true;
-        alertMessage.textContent = `Baby is crying! Continuous crying for ${requiredDuration}+ seconds.`;
-        alertOverlay.classList.add('visible');
-        playAlertSound();
-      }
-    } else {
-      cryStatusCard.className = 'card cry-status-card';
-      cryIcon.textContent = '👶'; cryLabel.textContent = 'Loud sound...';
-      const remaining = Math.ceil((requiredFrames - cryConsecutiveFrames) / CRY_FRAMES_PER_SEC);
-      cryDetail.textContent = `Confirming in ${remaining}s (${Math.round(progress*100)}%)`;
-    }
-  } else {
-    // ANY dip resets the counter — this is what separates breathing from crying
-    if (cryAlertFired) { dismissAlert(); }
-    cryConsecutiveFrames = 0;
-    isCrying = false; cryAlertFired = false;
-    cryStatusCard.className = 'card cry-status-card';
-    cryIcon.textContent = '🤫'; cryLabel.textContent = 'Quiet'; cryDetail.textContent = 'No crying detected';
+    cryIcon.textContent = '🤫'; cryLabel.textContent = 'Desativado'; cryDetail.textContent = 'Detecção de choro desligada';
+    cryMeterBar.style.width = '0%'; consecutiveCryFrames = 0; cryAlertFired = false;
   }
 }
 
@@ -364,7 +442,7 @@ let detectedNoiseBands = null;
 function drawLoop(){if(!isRunning)return;animationId=requestAnimationFrame(drawLoop);processBreathDetection(getFilteredAmplitude());processCryDetection();drawWaveform();drawSpectrum();drawHistory();drawTrend();}
 
 // ── Alert ───────────────────────────────────────────────────────
-function triggerAlert(s){alertMessage.textContent=`No breath detected for ${s} seconds.`;alertOverlay.classList.add('visible');playAlertSound();}
+function triggerAlert(s){alertMessage.textContent=`Nenhuma respiração detectada por ${s} segundos.`;alertOverlay.classList.add('visible');playAlertSound();}
 let alertBeepInterval = null;
 function playAlertSound(){
   if(!audioContext||audioContext.state==='closed') return;
@@ -469,13 +547,13 @@ autodetectBtn.onclick = () => {
 
   // Show banner
   scanBanner.classList.add('active');
-  scanBannerTitle.textContent = '🔍 Auto-Detect Active';
-  scanBannerDetail.textContent = 'Analyzing breathing patterns... Audio muted.';
+  scanBannerTitle.textContent = '🔍 Auto-Detecção Ativa';
+  scanBannerDetail.textContent = 'Analisando padrões de respiração... Áudio silenciado.';
 
   autodetectBtn.classList.add('scanning');
   autodetectBtn.disabled = true;
+  autodetectHint.textContent = 'Escaneando espectro por respiração...';
   autodetectProgress.classList.add('active');
-  autodetectHint.textContent = 'Scanning spectrum for breathing...';
 
   const startTime = performance.now();
   const data = new Uint8Array(bufLen);
@@ -487,7 +565,7 @@ autodetectBtn.onclick = () => {
     scanBannerFill.style.width = `${pct}%`;
 
     const remaining = Math.ceil((SCAN_DURATION - elapsed) / 1000);
-    autodetectBtn.textContent = `🔍 Scanning... ${remaining}s`;
+    autodetectBtn.textContent = `🔍 Escaneando... ${remaining}s`;
     scanBannerTime.textContent = `${remaining}s`;
 
     if(elapsed >= SCAN_DURATION) {
@@ -529,8 +607,8 @@ function finishAutoDetect() {
   const topCv = sortedByCv.length > 0 ? sortedByCv[0].cv : 0;
 
   if(topCv < 0.03) {
-    autodetectHint.textContent = '❌ No rhythmic pattern found. Try moving mic closer.';
-    scanBannerDetail.textContent = '❌ Failed — no pattern found';
+    autodetectHint.textContent = '❌ Nenhum padrão rítmico encontrado. Tente aproximar o mic.';
+    scanBannerDetail.textContent = '❌ Falhou — nenhum padrão encontrado';
     restoreAfterScan(); return;
   }
 
@@ -547,8 +625,8 @@ function finishAutoDetect() {
 
   const breathBands = detectedNoiseBands.filter(b => b.type === 'breathing').map(b => b.idx).sort((a,b) => a - b);
   if(breathBands.length === 0) {
-    autodetectHint.textContent = '❌ Could not isolate breathing.';
-    scanBannerDetail.textContent = '❌ Failed — try repositioning mic';
+    autodetectHint.textContent = '❌ Não foi possível isolar a respiração.';
+    scanBannerDetail.textContent = '❌ Falhou — tente reposicionar o mic';
     restoreAfterScan(); return;
   }
 
@@ -573,7 +651,7 @@ function finishAutoDetect() {
   // Now measure FILTERED amplitude to set optimal gain.
   // Wait 500ms for filters to settle, then sample for 10s
   // (long enough to catch at least one breath even with 20s gaps).
-  scanBannerDetail.textContent = '⚙️ Calibrating gain (10s)...';
+  scanBannerDetail.textContent = '⚙️ Calibrando ganho (10s)...';
   setTimeout(() => {
     const samples = [];
     const gainCalibInterval = setInterval(() => {
@@ -609,8 +687,8 @@ function finishAutoDetect() {
       }
       const noiseInfo = noiseRanges.length > 0 ? ` | Noise: ${noiseRanges.join(', ')}` : '';
       const finalGain = parseFloat(gainSlider.value);
-      autodetectHint.textContent = `✅ Breathing: ${hpFreq}–${lpFreq} Hz | Gain: ${finalGain}x${noiseInfo}`;
-      scanBannerDetail.textContent = `✅ Done! Filters: ${hpFreq}–${lpFreq} Hz, Gain: ${finalGain}x`;
+      autodetectHint.textContent = `✅ Respiração: ${hpFreq}–${lpFreq} Hz | Ganho: ${finalGain}x${noiseInfo}`;
+      scanBannerDetail.textContent = `✅ Pronto! Filtros: ${hpFreq}–${lpFreq} Hz, Ganho: ${finalGain}x`;
 
       restoreAfterScan();
     }, 10000); // 10s calibration
@@ -631,7 +709,7 @@ function restoreAfterScan() {
 
 function resetAutoDetectUI() {
   autodetectBtn.classList.remove('scanning');
-  autodetectBtn.textContent = '🔍 Auto-Detect Breathing';
+  autodetectBtn.textContent = '🔍 Auto-Detectar Respiração';
   autodetectBtn.disabled = !isRunning;
   setTimeout(() => { autodetectProgress.classList.remove('active'); autodetectBar.style.width = '0%'; }, 500);
 }
@@ -642,7 +720,7 @@ function savePresets(list) { localStorage.setItem(STORAGE_KEY, JSON.stringify(li
 
 function refreshPresetSelect() {
   const presets = getPresets();
-  presetSelect.innerHTML = '<option value="" disabled selected>Load a preset...</option>';
+  presetSelect.innerHTML = '<option value="" disabled selected>Carregar um preset...</option>';
   presets.forEach((p, i) => { const o = document.createElement('option'); o.value = i; o.text = p.name; presetSelect.appendChild(o); });
   loadPresetBtn.disabled = true;
   deletePresetBtn.disabled = true;
@@ -651,7 +729,7 @@ function refreshPresetSelect() {
 presetSelect.onchange = () => { loadPresetBtn.disabled = !presetSelect.value; deletePresetBtn.disabled = !presetSelect.value; };
 
 savePresetBtn.onclick = () => {
-  const name = prompt('Preset name:');
+  const name = prompt('Nome do preset:');
   if(!name || !name.trim()) return;
   const presets = getPresets();
   presets.push({
@@ -687,7 +765,7 @@ deletePresetBtn.onclick = () => {
   const idx = parseInt(presetSelect.value);
   const presets = getPresets();
   if(isNaN(idx) || !presets[idx]) return;
-  if(!confirm(`Delete preset "${presets[idx].name}"?`)) return;
+  if(!confirm(`Excluir preset "${presets[idx].name}"?`)) return;
   presets.splice(idx, 1);
   savePresets(presets);
   refreshPresetSelect();
@@ -695,3 +773,12 @@ deletePresetBtn.onclick = () => {
 
 // ── Init ────────────────────────────────────────────────────────
 resizeAllCanvases(); getDevices(); updateThresholdLine(); refreshPresetSelect();
+
+// Load YAMNet model in background
+loadModel((status) => {
+  if (!modelBadge) return;
+  if (status === 'loading') { modelBadge.textContent = '⏳ Carregando IA...'; modelBadge.className = 'model-badge loading'; }
+  else if (status === 'ready') { modelBadge.textContent = '🤖 YAMNet ativo'; modelBadge.className = 'model-badge ready'; }
+  else if (status === 'error') { modelBadge.textContent = '⚡ Modo amplitude'; modelBadge.className = 'model-badge error'; }
+  else { modelBadge.textContent = '⚡ IA indisponível'; modelBadge.className = 'model-badge error'; }
+});

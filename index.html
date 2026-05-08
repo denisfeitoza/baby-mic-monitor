@@ -1,128 +1,130 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="pt-BR">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Baby Breath Monitor</title>
+    <title>Monitor de Respiração do Bebê</title>
+    <meta name="description" content="Monitor inteligente de respiração e choro do bebê com detecção por IA (YAMNet)" />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="./style.css">
   </head>
   <body>
     <div class="app-container">
       <header>
-        <h1>🫁 Baby Breath <span>Monitor</span></h1>
-        <p>Noise-filtered breathing detection for your baby</p>
+        <h1>🫁 Monitor de <span>Respiração</span></h1>
+        <p>Detecção inteligente de respiração e choro do bebê</p>
       </header>
 
       <main>
         <!-- Left column: Controls -->
         <div class="controls-column">
           <div class="card controls-card">
-            <h3>Audio Input</h3>
+            <h3>Entrada de Áudio</h3>
             <div class="control-group">
-              <label for="mic-select">Microphone</label>
+              <label for="mic-select">Microfone</label>
               <div class="select-wrapper">
                 <select id="mic-select">
-                  <option value="" disabled selected>Select a microphone...</option>
+                  <option value="" disabled selected>Selecione um microfone...</option>
                 </select>
               </div>
             </div>
 
             <div class="control-group">
-              <label for="gain-slider">Amplification (Gain)</label>
+              <label for="gain-slider">Amplificação (Ganho)</label>
               <div class="slider-row">
                 <input type="range" id="gain-slider" min="1" max="30" step="0.5" value="8" />
                 <span id="gain-value" class="slider-value">8x</span>
               </div>
-              <p class="hint">Amplify the faint breathing signal</p>
+              <p class="hint">Amplifica o sinal fraco de respiração</p>
             </div>
 
-            <button id="start-btn" class="primary-btn">▶ Start Monitoring</button>
+            <button id="start-btn" class="primary-btn">▶ Iniciar Monitoramento</button>
           </div>
 
           <div class="card filter-card">
-            <h3>Noise Filters</h3>
+            <h3>Filtros de Ruído</h3>
 
             <!-- Auto-detect -->
             <div class="control-group">
-              <button id="autodetect-btn" class="secondary-btn" disabled>🔍 Auto-Detect Breathing</button>
-              <p class="hint" id="autodetect-hint">Start monitoring first, then click to scan</p>
+              <button id="autodetect-btn" class="secondary-btn" disabled>🔍 Auto-Detectar Respiração</button>
+              <p class="hint" id="autodetect-hint">Inicie o monitoramento primeiro, depois clique para escanear</p>
               <div class="autodetect-progress" id="autodetect-progress">
                 <div class="autodetect-bar" id="autodetect-bar"></div>
               </div>
             </div>
 
             <div class="control-group">
-              <label for="highpass-slider">High-Pass (cut fan rumble)</label>
+              <label for="highpass-slider">Passa-Alta (corta ruído grave)</label>
               <div class="slider-row">
                 <input type="range" id="highpass-slider" min="50" max="500" step="10" value="150" />
                 <span id="highpass-value" class="slider-value">150 Hz</span>
               </div>
-              <p class="hint">Cuts low frequencies — fan, AC, vibrations</p>
+              <p class="hint">Corta frequências baixas — ventilador, ar-condicionado, vibrações</p>
             </div>
 
             <div class="control-group">
-              <label for="lowpass-slider">Low-Pass (cut hiss)</label>
+              <label for="lowpass-slider">Passa-Baixa (corta chiado)</label>
               <div class="slider-row">
                 <input type="range" id="lowpass-slider" min="500" max="4000" step="50" value="1500" />
                 <span id="lowpass-value" class="slider-value">1500 Hz</span>
               </div>
-              <p class="hint">Cuts high frequencies — white noise hiss</p>
+              <p class="hint">Corta frequências altas — ruído branco, chiados</p>
             </div>
 
             <div class="control-group">
-              <label for="threshold-slider">Breath Detection Threshold</label>
+              <label for="threshold-slider">Limiar de Detecção de Respiração</label>
               <div class="slider-row">
                 <input type="range" id="threshold-slider" min="1" max="40" step="1" value="4" />
                 <span id="threshold-value" class="slider-value">4</span>
               </div>
-              <p class="hint">Set low for distant mic — only deeper breaths will register</p>
+              <p class="hint">Ajuste baixo para mic distante — só respirações profundas serão registradas</p>
             </div>
 
             <div class="control-group">
-              <label for="alert-slider">Alert after silence (seconds)</label>
+              <label for="alert-slider">Alertar após silêncio (segundos)</label>
               <div class="slider-row">
                 <input type="range" id="alert-slider" min="5" max="60" step="1" value="24" />
                 <span id="alert-value" class="slider-value">24s</span>
               </div>
-              <p class="hint">Distant mic = only deep breaths captured, gaps up to 20s are normal</p>
+              <p class="hint">Mic distante = só respirações profundas captadas, pausas de até 20s são normais</p>
             </div>
 
             <div class="control-group">
               <label class="toggle-label">
-                <span>Enable alerts (sound + popup)</span>
+                <span>Ativar alertas (som + popup)</span>
                 <div class="toggle-switch">
                   <input type="checkbox" id="alerts-toggle" checked>
                   <span class="slider-toggle"></span>
                 </div>
               </label>
-              <p class="hint">Turn off to silence all notifications</p>
+              <p class="hint">Desative para silenciar todas as notificações</p>
             </div>
 
             <div class="control-group">
               <label class="toggle-label">
-                <span>Detect continuous crying</span>
+                <span>Detectar choro contínuo (IA)</span>
                 <div class="toggle-switch">
                   <input type="checkbox" id="cry-toggle" checked>
                   <span class="slider-toggle"></span>
                 </div>
               </label>
+              <p class="hint">Usa YAMNet (Google) para identificar choro de bebê com inteligência artificial</p>
             </div>
 
             <div class="control-group">
-              <label for="cry-duration-slider">Cry must last (seconds)</label>
+              <label for="cry-duration-slider">Choro deve durar (segundos)</label>
               <div class="slider-row">
                 <input type="range" id="cry-duration-slider" min="2" max="15" step="1" value="4" />
                 <span id="cry-duration-value" class="slider-value">4s</span>
               </div>
-              <p class="hint">Ignore short noises — only alert for sustained crying</p>
+              <p class="hint">Ignora ruídos curtos — só alerta para choro contínuo</p>
             </div>
 
             <div class="control-group">
               <label class="toggle-label">
-                <span>Listen to filtered audio (headphones!)</span>
+                <span>Ouvir áudio filtrado (use fones!)</span>
                 <div class="toggle-switch">
-                  <input type="checkbox" id="monitor-toggle" checked>
+                  <input type="checkbox" id="monitor-toggle">
                   <span class="slider-toggle"></span>
                 </div>
               </label>
@@ -135,14 +137,14 @@
             <div class="control-group">
               <div class="select-wrapper">
                 <select id="preset-select">
-                  <option value="" disabled selected>Load a preset...</option>
+                  <option value="" disabled selected>Carregar um preset...</option>
                 </select>
               </div>
             </div>
             <div class="preset-actions">
-              <button id="load-preset-btn" class="secondary-btn small" disabled>Load</button>
-              <button id="save-preset-btn" class="secondary-btn small accent">💾 Save Current</button>
-              <button id="delete-preset-btn" class="secondary-btn small danger" disabled>Delete</button>
+              <button id="load-preset-btn" class="secondary-btn small" disabled>Carregar</button>
+              <button id="save-preset-btn" class="secondary-btn small accent">💾 Salvar Atual</button>
+              <button id="delete-preset-btn" class="secondary-btn small danger" disabled>Excluir</button>
             </div>
           </div>
         </div>
@@ -154,8 +156,8 @@
             <div class="breath-status-content">
               <div class="breath-icon" id="breath-icon">😴</div>
               <div class="breath-info">
-                <span class="breath-label" id="breath-label">Waiting...</span>
-                <span class="breath-detail" id="breath-detail">Press Start to begin monitoring</span>
+                <span class="breath-label" id="breath-label">Aguardando...</span>
+                <span class="breath-detail" id="breath-detail">Pressione Iniciar para começar o monitoramento</span>
               </div>
             </div>
             <div class="breath-meter-container">
@@ -164,15 +166,15 @@
             </div>
             <div class="breath-stats">
               <div class="stat">
-                <span class="stat-label">Breaths/min</span>
+                <span class="stat-label">Resp/min</span>
                 <span class="stat-value" id="bpm-value">—</span>
               </div>
               <div class="stat">
-                <span class="stat-label">Last breath</span>
+                <span class="stat-label">Última resp.</span>
                 <span class="stat-value" id="last-breath-value">—</span>
               </div>
               <div class="stat">
-                <span class="stat-label">Silence</span>
+                <span class="stat-label">Silêncio</span>
                 <span class="stat-value" id="silence-value">—</span>
               </div>
             </div>
@@ -183,12 +185,15 @@
             <div class="breath-status-content">
               <div class="breath-icon" id="cry-icon">🤫</div>
               <div class="breath-info">
-                <span class="breath-label" id="cry-label">Quiet</span>
-                <span class="breath-detail" id="cry-detail">No crying detected</span>
+                <span class="breath-label" id="cry-label">Silencioso</span>
+                <span class="breath-detail" id="cry-detail">Nenhum choro detectado</span>
               </div>
             </div>
             <div class="breath-meter-container">
               <div class="breath-meter-bar" id="cry-meter-bar" style="background:var(--accent-yellow)"></div>
+            </div>
+            <div class="cry-model-status" id="cry-model-status">
+              <span class="model-badge loading" id="model-badge">⏳ Carregando IA...</span>
             </div>
           </div>
 
@@ -197,21 +202,21 @@
             <div class="breath-status-content">
               <div class="breath-icon" id="sleep-icon">💤</div>
               <div class="breath-info">
-                <span class="breath-label" id="sleep-label">Waiting for data...</span>
-                <span class="breath-detail" id="sleep-detail">Need ~2 min of monitoring</span>
+                <span class="breath-label" id="sleep-label">Aguardando dados...</span>
+                <span class="breath-detail" id="sleep-detail">Precisa de ~2 min de monitoramento</span>
               </div>
             </div>
             <div class="sleep-stats">
               <div class="stat">
-                <span class="stat-label">Avg BPM (5min)</span>
+                <span class="stat-label">BPM médio (5min)</span>
                 <span class="stat-value" id="avg-bpm-value">—</span>
               </div>
               <div class="stat">
-                <span class="stat-label">Avg interval</span>
+                <span class="stat-label">Intervalo médio</span>
                 <span class="stat-value" id="avg-interval-value">—</span>
               </div>
               <div class="stat">
-                <span class="stat-label">Variability</span>
+                <span class="stat-label">Variabilidade</span>
                 <span class="stat-value" id="breath-variability-value">—</span>
               </div>
             </div>
@@ -220,7 +225,7 @@
           <!-- Filtered waveform -->
           <div class="card visualizer-card">
             <div class="visualizer-header">
-              <h3>Filtered Waveform (breathing only)</h3>
+              <h3>Forma de Onda Filtrada (apenas respiração)</h3>
               <span class="status-dot" id="status-dot"></span>
             </div>
             <canvas id="waveform-canvas"></canvas>
@@ -229,11 +234,11 @@
           <!-- Frequency spectrum -->
           <div class="card visualizer-card">
             <div class="visualizer-header">
-              <h3>Frequency Spectrum</h3>
+              <h3>Espectro de Frequência</h3>
               <span class="freq-legend">
-                <span class="legend-item"><span class="dot fan"></span>Fan</span>
-                <span class="legend-item"><span class="dot breath"></span>Breathing</span>
-                <span class="legend-item"><span class="dot noise"></span>White noise</span>
+                <span class="legend-item"><span class="dot fan"></span>Ventilador</span>
+                <span class="legend-item"><span class="dot breath"></span>Respiração</span>
+                <span class="legend-item"><span class="dot noise"></span>Ruído branco</span>
               </span>
             </div>
             <canvas id="spectrum-canvas"></canvas>
@@ -242,7 +247,7 @@
           <!-- Breathing history -->
           <div class="card visualizer-card">
             <div class="visualizer-header">
-              <h3>Breath History (last 60s)</h3>
+              <h3>Histórico de Respiração (últimos 60s)</h3>
             </div>
             <canvas id="history-canvas"></canvas>
           </div>
@@ -250,16 +255,16 @@
           <!-- BPM Trend (Moving Average) -->
           <div class="card visualizer-card">
             <div class="visualizer-header">
-              <h3>Breathing Rate Trend</h3>
+              <h3>Tendência da Frequência Respiratória</h3>
               <span class="trend-legend">
-                <span class="legend-item"><span class="dot" style="background:#6366f1"></span>Short (1min)</span>
-                <span class="legend-item"><span class="dot" style="background:#10b981"></span>Long (5min)</span>
+                <span class="legend-item"><span class="dot" style="background:#6366f1"></span>Curto (1min)</span>
+                <span class="legend-item"><span class="dot" style="background:#10b981"></span>Longo (5min)</span>
               </span>
             </div>
             <canvas id="trend-canvas"></canvas>
             <div class="trend-status" id="trend-status">
               <span id="trend-icon">📊</span>
-              <span id="trend-text">Waiting for data...</span>
+              <span id="trend-text">Aguardando dados...</span>
             </div>
           </div>
         </div>
@@ -270,9 +275,9 @@
     <div class="alert-overlay" id="alert-overlay">
       <div class="alert-box">
         <div class="alert-icon">⚠️</div>
-        <h2>No Breathing Detected!</h2>
-        <p id="alert-message">No breath detected for 15 seconds.</p>
-        <button class="primary-btn" id="dismiss-alert-btn">Dismiss</button>
+        <h2>Respiração Não Detectada!</h2>
+        <p id="alert-message">Nenhuma respiração detectada por 15 segundos.</p>
+        <button class="primary-btn" id="dismiss-alert-btn">Dispensar</button>
       </div>
     </div>
 
@@ -281,14 +286,15 @@
       <div class="scan-banner-content">
         <div class="scan-spinner"></div>
         <div class="scan-banner-text">
-          <strong id="scan-banner-title">🔍 Auto-Detect Active</strong>
-          <span id="scan-banner-detail">Analyzing breathing patterns... Audio muted.</span>
+          <strong id="scan-banner-title">🔍 Auto-Detecção Ativa</strong>
+          <span id="scan-banner-detail">Analisando padrões de respiração... Áudio silenciado.</span>
         </div>
         <span id="scan-banner-time" class="scan-banner-time">60s</span>
       </div>
       <div class="scan-banner-bar"><div class="scan-banner-fill" id="scan-banner-fill"></div></div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4/dist/tf.min.js"></script>
     <script type="module" src="./main.js"></script>
   </body>
 </html>

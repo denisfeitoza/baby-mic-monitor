@@ -803,3 +803,43 @@ canvas {
   width: 0%;
   transition: width 0.15s linear;
 }
+
+/* ── Model Badge ──────────────────────── */
+.cry-model-status {
+  margin-top: 0.5rem;
+  text-align: center;
+}
+
+.model-badge {
+  display: inline-block;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  transition: all 0.3s;
+}
+
+.model-badge.loading {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--accent-yellow);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  animation: badge-pulse 1.5s ease-in-out infinite;
+}
+
+.model-badge.ready {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--accent-green);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.model-badge.error {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--accent-red);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+@keyframes badge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
