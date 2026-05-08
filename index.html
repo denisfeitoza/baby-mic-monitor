@@ -246,6 +246,22 @@
             </div>
             <canvas id="history-canvas"></canvas>
           </div>
+
+          <!-- BPM Trend (Moving Average) -->
+          <div class="card visualizer-card">
+            <div class="visualizer-header">
+              <h3>Breathing Rate Trend</h3>
+              <span class="trend-legend">
+                <span class="legend-item"><span class="dot" style="background:#6366f1"></span>Short (1min)</span>
+                <span class="legend-item"><span class="dot" style="background:#10b981"></span>Long (5min)</span>
+              </span>
+            </div>
+            <canvas id="trend-canvas"></canvas>
+            <div class="trend-status" id="trend-status">
+              <span id="trend-icon">📊</span>
+              <span id="trend-text">Waiting for data...</span>
+            </div>
+          </div>
         </div>
       </main>
     </div>

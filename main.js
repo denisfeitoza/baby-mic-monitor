@@ -37,7 +37,7 @@ let sleepInterval = null;
 
 // ── Canvas resize ───────────────────────────────────────────────
 function resizeAllCanvases() {
-  [waveformCanvas, spectrumCanvas, historyCanvas].forEach(c => {
+  [waveformCanvas, spectrumCanvas, historyCanvas, trendCanvas].forEach(c => {
     const dpr = window.devicePixelRatio || 1;
     c.width = c.clientWidth * dpr; c.height = c.clientHeight * dpr;
     c.getContext('2d').scale(dpr, dpr);
@@ -97,7 +97,7 @@ async function startAudio() {
     autodetectBtn.disabled=false;
     resizeAllCanvases(); updateThresholdLine(); drawLoop();
     historyInterval = setInterval(()=>{ if(!isRunning||!analyserFiltered) return; breathHistory.push(getFilteredAmplitude()); if(breathHistory.length>HISTORY_LENGTH) breathHistory.shift(); }, 100);
-    sleepInterval = setInterval(updateSleepStage, 10000); // every 10s
+    sleepInterval = setInterval(() => { updateSleepStage(); updateTrend(); }, 10000);
   } catch(e) { alert('Could not start: '+e.message); }
 }
 
@@ -201,71 +201,167 @@ function processCryDetection() {
 }
 
 // ── Sleep Stage Estimation ──────────────────────────────────────
-// Uses moving average of breath-to-breath intervals (last 5 min).
-// Newborn sleep stages by detected breathing pattern:
-//   Deep sleep: slow, regular breathing (low BPM, low variability)
-//   Light sleep: moderate, somewhat regular
-//   Active/REM: fast or irregular breathing (high variability)
-// Note: with distant mic, only deeper breaths are captured,
-// so detected BPM is lower than actual. We adjust thresholds accordingly.
+// Friendly labels for non-technical users. Uses 5-min moving average.
+// With distant mic, only deeper breaths register — BPM will be low.
 function updateSleepStage() {
   const now = performance.now();
-  const WINDOW = 5 * 60 * 1000; // 5 minutes
+  const WINDOW = 5 * 60 * 1000;
   const recent = breathTimestamps.filter(t => now - t < WINDOW);
 
   if (recent.length < 4) {
     sleepStageCard.className = 'card sleep-stage-card';
-    sleepIcon.textContent = '💤'; sleepLabel.textContent = 'Collecting data...';
-    sleepDetail.textContent = `${recent.length} breaths detected, need ≥4`;
+    sleepIcon.textContent = '💤'; sleepLabel.textContent = 'Coletando dados...';
+    sleepDetail.textContent = `${recent.length} respirações, precisa de ≥4`;
     avgBpmValue.textContent = '—'; avgIntervalValue.textContent = '—'; breathVariabilityValue.textContent = '—';
     return;
   }
 
-  // Calculate intervals between consecutive breaths
   const intervals = [];
   for (let i = 1; i < recent.length; i++) {
-    intervals.push((recent[i] - recent[i-1]) / 1000); // seconds
+    intervals.push((recent[i] - recent[i-1]) / 1000);
   }
 
-  // Moving average stats
   const avgInterval = intervals.reduce((a,b) => a+b, 0) / intervals.length;
   const avgBpm = Math.round(60 / avgInterval);
   const variance = intervals.reduce((a,b) => a + (b - avgInterval) ** 2, 0) / intervals.length;
   const std = Math.sqrt(variance);
-  const cv = avgInterval > 0 ? std / avgInterval : 0; // coefficient of variation
+  const cv = avgInterval > 0 ? std / avgInterval : 0;
 
   avgBpmValue.textContent = `${avgBpm}`;
   avgIntervalValue.textContent = `${avgInterval.toFixed(1)}s`;
-  breathVariabilityValue.textContent = cv < 0.2 ? 'Low' : cv < 0.4 ? 'Med' : 'High';
+  breathVariabilityValue.textContent = cv < 0.2 ? 'Baixa' : cv < 0.4 ? 'Média' : 'Alta';
 
-  // Classify sleep stage
-  // With distant mic, detected BPM is lower (we only catch deep breaths).
-  // Deep sleep: very slow detected breaths, very regular (CV < 0.25)
-  // Light sleep: moderate rate, moderate regularity
-  // Active/REM: faster or highly irregular
-  if (cv < 0.25 && avgBpm <= 8) {
+  // 5 levels: Sono Profundo → Sono Médio → Sono Leve → Soneca → Acordando
+  if (cv < 0.2 && avgBpm <= 5) {
     sleepStageCard.className = 'card sleep-stage-card deep';
-    sleepIcon.textContent = '🌙';
-    sleepLabel.textContent = 'Deep Sleep';
-    sleepDetail.textContent = `Slow & regular (${avgBpm} bpm, CV ${(cv*100).toFixed(0)}%)`;
-  } else if (cv < 0.4 && avgBpm <= 15) {
+    sleepIcon.textContent = '🌙'; sleepLabel.textContent = 'Sono Profundo';
+    sleepDetail.textContent = `Respiração muito lenta e regular`;
+  } else if (cv < 0.3 && avgBpm <= 8) {
+    sleepStageCard.className = 'card sleep-stage-card deep';
+    sleepIcon.textContent = '😴'; sleepLabel.textContent = 'Sono Médio';
+    sleepDetail.textContent = `Respiração lenta e estável`;
+  } else if (cv < 0.4 && avgBpm <= 12) {
     sleepStageCard.className = 'card sleep-stage-card light';
-    sleepIcon.textContent = '😴';
-    sleepLabel.textContent = 'Light Sleep';
-    sleepDetail.textContent = `Moderate (${avgBpm} bpm, CV ${(cv*100).toFixed(0)}%)`;
+    sleepIcon.textContent = '💤'; sleepLabel.textContent = 'Sono Leve';
+    sleepDetail.textContent = `Respiração moderada`;
+  } else if (cv < 0.5 && avgBpm <= 18) {
+    sleepStageCard.className = 'card sleep-stage-card active-sleep';
+    sleepIcon.textContent = '👶'; sleepLabel.textContent = 'Soneca / REM';
+    sleepDetail.textContent = `Respiração irregular — sonho ou transição`;
   } else {
     sleepStageCard.className = 'card sleep-stage-card active-sleep';
-    sleepIcon.textContent = '👶';
-    sleepLabel.textContent = 'Active / REM';
-    sleepDetail.textContent = `Fast or irregular (${avgBpm} bpm, CV ${(cv*100).toFixed(0)}%)`;
+    sleepIcon.textContent = '👀'; sleepLabel.textContent = 'Acordando';
+    sleepDetail.textContent = `Respiração rápida ou agitada`;
   }
 }
 
+// ── BPM Trend (EMA) ─────────────────────────────────────────────
+// Dual exponential moving average: short (1min) vs long (5min)
+// Plotted over time. Divergence = pattern change.
+const trendCanvas = document.getElementById('trend-canvas');
+const tCtx = trendCanvas.getContext('2d');
+const trendStatus = $('trend-status'), trendIcon = $('trend-icon'), trendText = $('trend-text');
+const TREND_MAX_POINTS = 180; // 30min at 1 point per 10s
+let trendShort = []; // EMA short (1min)
+let trendLong = [];  // EMA long (5min)
+let emaBpmShort = null, emaBpmLong = null;
+let lastTrendBpm = null;
+
+function updateTrend() {
+  const now = performance.now();
+  // Calculate instantaneous BPM from recent breaths
+  const recent2min = breathTimestamps.filter(t => now - t < 120000);
+  if (recent2min.length < 2) return;
+
+  const lastInterval = (recent2min[recent2min.length-1] - recent2min[recent2min.length-2]) / 1000;
+  if (lastInterval <= 0 || lastInterval > 120) return;
+  const instantBpm = 60 / lastInterval;
+
+  // EMA: α = 2/(N+1). Short = ~6 samples (1min at 10s intervals), Long = ~30 samples (5min)
+  const alphaShort = 2 / 7;
+  const alphaLong = 2 / 31;
+
+  if (emaBpmShort === null) { emaBpmShort = instantBpm; emaBpmLong = instantBpm; }
+  emaBpmShort = alphaShort * instantBpm + (1 - alphaShort) * emaBpmShort;
+  emaBpmLong = alphaLong * instantBpm + (1 - alphaLong) * emaBpmLong;
+
+  trendShort.push(emaBpmShort);
+  trendLong.push(emaBpmLong);
+  if (trendShort.length > TREND_MAX_POINTS) { trendShort.shift(); trendLong.shift(); }
+
+  // Pattern status
+  const divergence = emaBpmLong > 0 ? Math.abs(emaBpmShort - emaBpmLong) / emaBpmLong : 0;
+  if (divergence < 0.15) {
+    trendStatus.className = 'trend-status stable';
+    trendIcon.textContent = '✅'; trendText.textContent = `Padrão estável (${emaBpmShort.toFixed(1)} bpm)`;
+  } else if (divergence < 0.35) {
+    trendStatus.className = 'trend-status changing';
+    trendIcon.textContent = '🔄'; trendText.textContent = `Padrão mudando (${emaBpmShort.toFixed(1)} → era ${emaBpmLong.toFixed(1)} bpm)`;
+  } else {
+    trendStatus.className = 'trend-status alert';
+    trendIcon.textContent = '⚡'; trendText.textContent = `Mudança brusca (${emaBpmShort.toFixed(1)} vs ${emaBpmLong.toFixed(1)} bpm)`;
+  }
+}
+
+function drawTrend() {
+  const w = trendCanvas.clientWidth, h = trendCanvas.clientHeight;
+  tCtx.fillStyle = '#0c1222'; tCtx.fillRect(0, 0, w, h);
+  if (trendShort.length < 2) return;
+
+  // Find Y scale from data
+  const all = [...trendShort, ...trendLong];
+  const yMin = Math.max(0, Math.min(...all) - 1);
+  const yMax = Math.max(...all) + 1;
+  const yRange = yMax - yMin || 1;
+
+  const step = w / (TREND_MAX_POINTS - 1);
+  const xOffset = (TREND_MAX_POINTS - trendShort.length) * step;
+
+  // Draw grid lines
+  tCtx.strokeStyle = 'rgba(255,255,255,0.05)'; tCtx.lineWidth = 1;
+  for (let bpm = Math.ceil(yMin); bpm <= yMax; bpm += Math.max(1, Math.floor(yRange / 4))) {
+    const y = h - ((bpm - yMin) / yRange) * h;
+    tCtx.beginPath(); tCtx.moveTo(0, y); tCtx.lineTo(w, y); tCtx.stroke();
+    tCtx.fillStyle = 'rgba(255,255,255,0.2)'; tCtx.font = '10px sans-serif';
+    tCtx.fillText(`${bpm}`, 3, y - 3);
+  }
+
+  // Long EMA (fill)
+  tCtx.beginPath(); tCtx.moveTo(xOffset, h);
+  for (let i = 0; i < trendLong.length; i++) {
+    const x = xOffset + i * step, y = h - ((trendLong[i] - yMin) / yRange) * h;
+    tCtx.lineTo(x, y);
+  }
+  tCtx.lineTo(xOffset + (trendLong.length - 1) * step, h); tCtx.closePath();
+  const gLong = tCtx.createLinearGradient(0, 0, 0, h);
+  gLong.addColorStop(0, 'rgba(16,185,129,0.15)'); gLong.addColorStop(1, 'rgba(16,185,129,0)');
+  tCtx.fillStyle = gLong; tCtx.fill();
+
+  // Long EMA line
+  tCtx.strokeStyle = '#10b981'; tCtx.lineWidth = 1.5; tCtx.beginPath();
+  for (let i = 0; i < trendLong.length; i++) {
+    const x = xOffset + i * step, y = h - ((trendLong[i] - yMin) / yRange) * h;
+    i === 0 ? tCtx.moveTo(x, y) : tCtx.lineTo(x, y);
+  } tCtx.stroke();
+
+  // Short EMA line
+  tCtx.strokeStyle = '#6366f1'; tCtx.lineWidth = 2; tCtx.beginPath();
+  for (let i = 0; i < trendShort.length; i++) {
+    const x = xOffset + i * step, y = h - ((trendShort[i] - yMin) / yRange) * h;
+    i === 0 ? tCtx.moveTo(x, y) : tCtx.lineTo(x, y);
+  } tCtx.stroke();
+
+  // Current value dot
+  const lastX = xOffset + (trendShort.length - 1) * step;
+  const lastY = h - ((trendShort[trendShort.length - 1] - yMin) / yRange) * h;
+  tCtx.fillStyle = '#6366f1'; tCtx.beginPath(); tCtx.arc(lastX, lastY, 3, 0, Math.PI * 2); tCtx.fill();
+}
+
 // ── Detected noise zones (updated by auto-detect) ───────────────
-let detectedNoiseBands = null; // null = use default filter-based coloring
+let detectedNoiseBands = null;
 
 // ── Drawing ─────────────────────────────────────────────────────
-function drawLoop(){if(!isRunning)return;animationId=requestAnimationFrame(drawLoop);processBreathDetection(getFilteredAmplitude());processCryDetection();drawWaveform();drawSpectrum();drawHistory();}
+function drawLoop(){if(!isRunning)return;animationId=requestAnimationFrame(drawLoop);processBreathDetection(getFilteredAmplitude());processCryDetection();drawWaveform();drawSpectrum();drawHistory();drawTrend();}
 
 // ── Alert ───────────────────────────────────────────────────────
 function triggerAlert(s){alertMessage.textContent=`No breath detected for ${s} seconds.`;alertOverlay.classList.add('visible');playAlertSound();}

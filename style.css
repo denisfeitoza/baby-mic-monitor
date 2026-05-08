@@ -404,6 +404,46 @@ input:checked + .slider-toggle::before {
   margin-top: 0.5rem;
 }
 
+/* ── Trend Chart ───────────────────────── */
+.trend-legend {
+  display: flex;
+  gap: 0.75rem;
+  font-size: 0.7rem;
+}
+
+.trend-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.375rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--card-border);
+  transition: all 0.4s;
+}
+
+.trend-status.stable {
+  border-color: var(--accent-green);
+  color: var(--accent-green);
+}
+
+.trend-status.changing {
+  border-color: var(--accent-yellow);
+  color: var(--accent-yellow);
+}
+
+.trend-status.alert {
+  border-color: var(--accent-red);
+  color: var(--accent-red);
+}
+
+#trend-canvas {
+  height: 100px;
+}
+
 /* ── Auto-detect progress ──────────────── */
 .autodetect-progress {
   width: 100%;
