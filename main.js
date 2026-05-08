@@ -127,55 +127,66 @@ function processBreathDetection(amp) {
 }
 
 // ── Cry detection ───────────────────────────────────────────────
-// Uses RAW analyser (unfiltered) to detect sustained loud sound
-// in the 250-2000 Hz range (baby cry fundamental + harmonics).
+// Baby crying: LOUD + CONTINUOUS (no gaps). Breathing is periodic
+// with pauses. We check that amplitude stays above threshold
+// without ANY dip below it — breathing always dips between breaths.
 function getRawCryAmplitude() {
   const bufLen = analyserRaw.frequencyBinCount;
   const data = new Uint8Array(bufLen);
   analyserRaw.getByteFrequencyData(data);
   const sr = audioContext.sampleRate, ny = sr / 2;
-  const binLow = Math.floor((250 / ny) * bufLen);
-  const binHigh = Math.floor((2000 / ny) * bufLen);
+  // Baby cry: fundamental 400-600Hz + harmonics up to ~2500Hz
+  const binLow = Math.floor((350 / ny) * bufLen);
+  const binHigh = Math.floor((2500 / ny) * bufLen);
   let sum = 0, count = 0;
   for (let i = binLow; i < binHigh && i < bufLen; i++) { sum += data[i]; count++; }
   return count > 0 ? sum / count : 0;
 }
 
+let cryConsecutiveFrames = 0; // frames where amplitude stayed above threshold
+const CRY_FRAMES_PER_SEC = 15; // ~60fps / 4 (requestAnimationFrame rate)
+
 function processCryDetection() {
   if (!cryToggle.checked) {
     cryStatusCard.className = 'card cry-status-card';
     cryIcon.textContent = '🤫'; cryLabel.textContent = 'Disabled'; cryDetail.textContent = 'Cry detection is off';
-    cryMeterBar.style.width = '0%'; isCrying = false; cryAlertFired = false;
+    cryMeterBar.style.width = '0%'; isCrying = false; cryAlertFired = false; cryConsecutiveFrames = 0;
     return;
   }
   const amp = getRawCryAmplitude();
-  const CRY_THRESHOLD = 70;
-  const requiredDuration = parseInt(cryDurationSlider.value) * 1000;
-  const now = performance.now();
+  // Crying is MUCH louder than breathing — high threshold
+  const CRY_THRESHOLD = 120;
+  const requiredDuration = parseInt(cryDurationSlider.value);
+  const requiredFrames = requiredDuration * CRY_FRAMES_PER_SEC;
 
-  cryMeterBar.style.width = `${Math.min((amp / 80) * 100, 100)}%`;
+  cryMeterBar.style.width = `${Math.min((amp / 180) * 100, 100)}%`;
 
   if (amp > CRY_THRESHOLD) {
-    if (!isCrying) { isCrying = true; cryStartTime = now; }
-    const duration = now - cryStartTime;
+    // Must be CONTINUOUSLY above threshold (no gaps = not breathing)
+    cryConsecutiveFrames++;
+    const progress = Math.min(cryConsecutiveFrames / requiredFrames, 1);
 
-    if (duration >= requiredDuration) {
+    if (cryConsecutiveFrames >= requiredFrames) {
       cryStatusCard.className = 'card cry-status-card crying';
       cryIcon.textContent = '😭'; cryLabel.textContent = 'Baby is crying!';
-      cryDetail.textContent = `Crying for ${(duration/1000).toFixed(0)}s`;
+      const secs = Math.floor(cryConsecutiveFrames / CRY_FRAMES_PER_SEC);
+      cryDetail.textContent = `Crying for ${secs}s`;
       if (!cryAlertFired && alertsToggle.checked) {
         cryAlertFired = true;
-        alertMessage.textContent = `Baby is crying! Continuous crying for ${parseInt(cryDurationSlider.value)}+ seconds.`;
+        alertMessage.textContent = `Baby is crying! Continuous crying for ${requiredDuration}+ seconds.`;
         alertOverlay.classList.add('visible');
         playAlertSound();
       }
     } else {
       cryStatusCard.className = 'card cry-status-card';
-      cryIcon.textContent = '👶'; cryLabel.textContent = 'Noise detected...';
-      cryDetail.textContent = `Waiting ${((requiredDuration - duration)/1000).toFixed(0)}s to confirm cry`;
+      cryIcon.textContent = '👶'; cryLabel.textContent = 'Loud sound...';
+      const remaining = Math.ceil((requiredFrames - cryConsecutiveFrames) / CRY_FRAMES_PER_SEC);
+      cryDetail.textContent = `Confirming in ${remaining}s (${Math.round(progress*100)}%)`;
     }
   } else {
-    if (isCrying && cryAlertFired) { dismissAlert(); }
+    // ANY dip resets the counter — this is what separates breathing from crying
+    if (cryAlertFired) { dismissAlert(); }
+    cryConsecutiveFrames = 0;
     isCrying = false; cryAlertFired = false;
     cryStatusCard.className = 'card cry-status-card';
     cryIcon.textContent = '🤫'; cryLabel.textContent = 'Quiet'; cryDetail.textContent = 'No crying detected';
