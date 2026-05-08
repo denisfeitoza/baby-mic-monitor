@@ -73,10 +73,10 @@
             <div class="control-group">
               <label for="threshold-slider">Breath Detection Threshold</label>
               <div class="slider-row">
-                <input type="range" id="threshold-slider" min="1" max="40" step="1" value="8" />
-                <span id="threshold-value" class="slider-value">8</span>
+                <input type="range" id="threshold-slider" min="1" max="40" step="1" value="4" />
+                <span id="threshold-value" class="slider-value">4</span>
               </div>
-              <p class="hint">Lower = more sensitive, higher = less false positives</p>
+              <p class="hint">Set low for distant mic — only deeper breaths will register</p>
             </div>
 
             <div class="control-group">
@@ -85,7 +85,7 @@
                 <input type="range" id="alert-slider" min="5" max="60" step="1" value="24" />
                 <span id="alert-value" class="slider-value">24s</span>
               </div>
-              <p class="hint">Alert if no breath detected for this duration</p>
+              <p class="hint">Distant mic = only deep breaths captured, gaps up to 20s are normal</p>
             </div>
 
             <div class="control-group">
@@ -189,6 +189,31 @@
             </div>
             <div class="breath-meter-container">
               <div class="breath-meter-bar" id="cry-meter-bar" style="background:var(--accent-yellow)"></div>
+            </div>
+          </div>
+
+          <!-- Sleep stage estimation -->
+          <div class="card sleep-stage-card" id="sleep-stage-card">
+            <div class="breath-status-content">
+              <div class="breath-icon" id="sleep-icon">💤</div>
+              <div class="breath-info">
+                <span class="breath-label" id="sleep-label">Waiting for data...</span>
+                <span class="breath-detail" id="sleep-detail">Need ~2 min of monitoring</span>
+              </div>
+            </div>
+            <div class="sleep-stats">
+              <div class="stat">
+                <span class="stat-label">Avg BPM (5min)</span>
+                <span class="stat-value" id="avg-bpm-value">—</span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">Avg interval</span>
+                <span class="stat-value" id="avg-interval-value">—</span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">Variability</span>
+                <span class="stat-value" id="breath-variability-value">—</span>
+              </div>
             </div>
           </div>
 

@@ -17,6 +17,8 @@ const presetSelect = $('preset-select'), loadPresetBtn = $('load-preset-btn');
 const savePresetBtn = $('save-preset-btn'), deletePresetBtn = $('delete-preset-btn');
 const cryToggle = $('cry-toggle'), cryDurationSlider = $('cry-duration-slider'), cryDurationValue = $('cry-duration-value');
 const cryStatusCard = $('cry-status-card'), cryIcon = $('cry-icon'), cryLabel = $('cry-label'), cryDetail = $('cry-detail'), cryMeterBar = $('cry-meter-bar');
+const sleepStageCard = $('sleep-stage-card'), sleepIcon = $('sleep-icon'), sleepLabel = $('sleep-label'), sleepDetail = $('sleep-detail');
+const avgBpmValue = $('avg-bpm-value'), avgIntervalValue = $('avg-interval-value'), breathVariabilityValue = $('breath-variability-value');
 const waveformCanvas = $('waveform-canvas'), spectrumCanvas = $('spectrum-canvas'), historyCanvas = $('history-canvas');
 const wCtx = waveformCanvas.getContext('2d'), sCtx = spectrumCanvas.getContext('2d'), hCtx = historyCanvas.getContext('2d');
 
@@ -29,6 +31,9 @@ let alertFired=false, alertOscillator=null, alertGainNode=null;
 let cryStartTime=0, isCrying=false, cryAlertFired=false;
 const HISTORY_LENGTH = 600;
 const STORAGE_KEY = 'bbm_presets';
+let sleepInterval = null;
+// Moving average: store detected breath timestamps for 5-min window
+// Sleep stage is estimated every 10s from this data
 
 // ── Canvas resize ───────────────────────────────────────────────
 function resizeAllCanvases() {
@@ -92,6 +97,7 @@ async function startAudio() {
     autodetectBtn.disabled=false;
     resizeAllCanvases(); updateThresholdLine(); drawLoop();
     historyInterval = setInterval(()=>{ if(!isRunning||!analyserFiltered) return; breathHistory.push(getFilteredAmplitude()); if(breathHistory.length>HISTORY_LENGTH) breathHistory.shift(); }, 100);
+    sleepInterval = setInterval(updateSleepStage, 10000); // every 10s
   } catch(e) { alert('Could not start: '+e.message); }
 }
 
@@ -100,6 +106,7 @@ function stopAudio() {
   if(audioContext) audioContext.close();
   if(animationId) cancelAnimationFrame(animationId);
   if(historyInterval) clearInterval(historyInterval);
+  if(sleepInterval) clearInterval(sleepInterval);
   stopAlertSound(); isRunning=false;
   startBtn.textContent='▶ Start Monitoring'; startBtn.classList.remove('active'); statusDot.classList.remove('active');
   autodetectBtn.disabled=true;
@@ -193,9 +200,68 @@ function processCryDetection() {
   }
 }
 
+// ── Sleep Stage Estimation ──────────────────────────────────────
+// Uses moving average of breath-to-breath intervals (last 5 min).
+// Newborn sleep stages by detected breathing pattern:
+//   Deep sleep: slow, regular breathing (low BPM, low variability)
+//   Light sleep: moderate, somewhat regular
+//   Active/REM: fast or irregular breathing (high variability)
+// Note: with distant mic, only deeper breaths are captured,
+// so detected BPM is lower than actual. We adjust thresholds accordingly.
+function updateSleepStage() {
+  const now = performance.now();
+  const WINDOW = 5 * 60 * 1000; // 5 minutes
+  const recent = breathTimestamps.filter(t => now - t < WINDOW);
+
+  if (recent.length < 4) {
+    sleepStageCard.className = 'card sleep-stage-card';
+    sleepIcon.textContent = '💤'; sleepLabel.textContent = 'Collecting data...';
+    sleepDetail.textContent = `${recent.length} breaths detected, need ≥4`;
+    avgBpmValue.textContent = '—'; avgIntervalValue.textContent = '—'; breathVariabilityValue.textContent = '—';
+    return;
+  }
+
+  // Calculate intervals between consecutive breaths
+  const intervals = [];
+  for (let i = 1; i < recent.length; i++) {
+    intervals.push((recent[i] - recent[i-1]) / 1000); // seconds
+  }
+
+  // Moving average stats
+  const avgInterval = intervals.reduce((a,b) => a+b, 0) / intervals.length;
+  const avgBpm = Math.round(60 / avgInterval);
+  const variance = intervals.reduce((a,b) => a + (b - avgInterval) ** 2, 0) / intervals.length;
+  const std = Math.sqrt(variance);
+  const cv = avgInterval > 0 ? std / avgInterval : 0; // coefficient of variation
+
+  avgBpmValue.textContent = `${avgBpm}`;
+  avgIntervalValue.textContent = `${avgInterval.toFixed(1)}s`;
+  breathVariabilityValue.textContent = cv < 0.2 ? 'Low' : cv < 0.4 ? 'Med' : 'High';
+
+  // Classify sleep stage
+  // With distant mic, detected BPM is lower (we only catch deep breaths).
+  // Deep sleep: very slow detected breaths, very regular (CV < 0.25)
+  // Light sleep: moderate rate, moderate regularity
+  // Active/REM: faster or highly irregular
+  if (cv < 0.25 && avgBpm <= 8) {
+    sleepStageCard.className = 'card sleep-stage-card deep';
+    sleepIcon.textContent = '🌙';
+    sleepLabel.textContent = 'Deep Sleep';
+    sleepDetail.textContent = `Slow & regular (${avgBpm} bpm, CV ${(cv*100).toFixed(0)}%)`;
+  } else if (cv < 0.4 && avgBpm <= 15) {
+    sleepStageCard.className = 'card sleep-stage-card light';
+    sleepIcon.textContent = '😴';
+    sleepLabel.textContent = 'Light Sleep';
+    sleepDetail.textContent = `Moderate (${avgBpm} bpm, CV ${(cv*100).toFixed(0)}%)`;
+  } else {
+    sleepStageCard.className = 'card sleep-stage-card active-sleep';
+    sleepIcon.textContent = '👶';
+    sleepLabel.textContent = 'Active / REM';
+    sleepDetail.textContent = `Fast or irregular (${avgBpm} bpm, CV ${(cv*100).toFixed(0)}%)`;
+  }
+}
+
 // ── Detected noise zones (updated by auto-detect) ───────────────
-// Default: fan < highpass, breathing = between filters, noise > lowpass
-// After auto-detect these get refined based on actual CV analysis.
 let detectedNoiseBands = null; // null = use default filter-based coloring
 
 // ── Drawing ─────────────────────────────────────────────────────
@@ -409,8 +475,9 @@ function finishAutoDetect() {
   if(lowpassFilter) lowpassFilter.frequency.setTargetAtTime(lpFreq, audioContext.currentTime, 0.05);
 
   // Now measure FILTERED amplitude to set optimal gain.
-  // Wait 500ms for filters to settle, then sample for 3s.
-  scanBannerDetail.textContent = '⚙️ Calibrating gain...';
+  // Wait 500ms for filters to settle, then sample for 10s
+  // (long enough to catch at least one breath even with 20s gaps).
+  scanBannerDetail.textContent = '⚙️ Calibrating gain (10s)...';
   setTimeout(() => {
     const samples = [];
     const gainCalibInterval = setInterval(() => {
@@ -419,20 +486,19 @@ function finishAutoDetect() {
     setTimeout(() => {
       clearInterval(gainCalibInterval);
       if(samples.length > 0) {
-        // Get the peak amplitude (breathing peaks)
+        // Use top 5% peaks — with distant mic, most samples are silence
         const sorted = [...samples].sort((a,b) => b - a);
-        const peakAvg = sorted.slice(0, Math.max(3, Math.floor(sorted.length * 0.1)))
-                              .reduce((a,b) => a+b, 0) / Math.max(3, Math.floor(sorted.length * 0.1));
+        const topCount = Math.max(2, Math.floor(sorted.length * 0.05));
+        const peakAvg = sorted.slice(0, topCount).reduce((a,b) => a+b, 0) / topCount;
         const currentGain = parseFloat(gainSlider.value);
-        // Target: breathing peaks at ~12-15 on the amplitude scale
-        const targetPeak = 13;
-        if(peakAvg > 0.5) {
+        // Target: breathing peaks visible at ~10-12 on the amplitude scale
+        const targetPeak = 11;
+        if(peakAvg > 0.3) {
           let optimalGain = Math.round((targetPeak / peakAvg) * currentGain * 2) / 2;
           optimalGain = Math.max(1, Math.min(30, optimalGain));
           gainNode.gain.setTargetAtTime(optimalGain, audioContext.currentTime, 0.05);
           gainSlider.value = optimalGain; gainValue.textContent = `${optimalGain}x`;
         }
-        // else: signal too weak even after filtering, keep current gain
       }
 
       // Report
@@ -451,7 +517,7 @@ function finishAutoDetect() {
       scanBannerDetail.textContent = `✅ Done! Filters: ${hpFreq}–${lpFreq} Hz, Gain: ${finalGain}x`;
 
       restoreAfterScan();
-    }, 3000); // 3s calibration
+    }, 10000); // 10s calibration
   }, 500); // 500ms filter settle
 }
 
