@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Baby Breath Monitor</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="./style.css">
+  </head>
+  <body>
+    <div class="app-container">
+      <header>
+        <h1>🫁 Baby Breath <span>Monitor</span></h1>
+        <p>Noise-filtered breathing detection for your baby</p>
+      </header>
+
+      <main>
+        <!-- Left column: Controls -->
+        <div class="controls-column">
+          <div class="card controls-card">
+            <h3>Audio Input</h3>
+            <div class="control-group">
+              <label for="mic-select">Microphone</label>
+              <div class="select-wrapper">
+                <select id="mic-select">
+                  <option value="" disabled selected>Select a microphone...</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="control-group">
+              <label for="gain-slider">Amplification (Gain)</label>
+              <div class="slider-row">
+                <input type="range" id="gain-slider" min="1" max="30" step="0.5" value="8" />
+                <span id="gain-value" class="slider-value">8x</span>
+              </div>
+              <p class="hint">Amplify the faint breathing signal</p>
+            </div>
+
+            <button id="start-btn" class="primary-btn">▶ Start Monitoring</button>
+          </div>
+
+          <div class="card filter-card">
+            <h3>Noise Filters</h3>
+
+            <!-- Auto-detect -->
+            <div class="control-group">
+              <button id="autodetect-btn" class="secondary-btn" disabled>🔍 Auto-Detect Breathing</button>
+              <p class="hint" id="autodetect-hint">Start monitoring first, then click to scan</p>
+              <div class="autodetect-progress" id="autodetect-progress">
+                <div class="autodetect-bar" id="autodetect-bar"></div>
+              </div>
+            </div>
+
+            <div class="control-group">
+              <label for="highpass-slider">High-Pass (cut fan rumble)</label>
+              <div class="slider-row">
+                <input type="range" id="highpass-slider" min="50" max="500" step="10" value="150" />
+                <span id="highpass-value" class="slider-value">150 Hz</span>
+              </div>
+              <p class="hint">Cuts low frequencies — fan, AC, vibrations</p>
+            </div>
+
+            <div class="control-group">
+              <label for="lowpass-slider">Low-Pass (cut hiss)</label>
+              <div class="slider-row">
+                <input type="range" id="lowpass-slider" min="500" max="4000" step="50" value="1500" />
+                <span id="lowpass-value" class="slider-value">1500 Hz</span>
+              </div>
+              <p class="hint">Cuts high frequencies — white noise hiss</p>
+            </div>
+
+            <div class="control-group">
+              <label for="threshold-slider">Breath Detection Threshold</label>
+              <div class="slider-row">
+                <input type="range" id="threshold-slider" min="1" max="40" step="1" value="8" />
+                <span id="threshold-value" class="slider-value">8</span>
+              </div>
+              <p class="hint">Lower = more sensitive, higher = less false positives</p>
+            </div>
+
+            <div class="control-group">
+              <label for="alert-slider">Alert after silence (seconds)</label>
+              <div class="slider-row">
+                <input type="range" id="alert-slider" min="5" max="60" step="1" value="24" />
+                <span id="alert-value" class="slider-value">24s</span>
+              </div>
+              <p class="hint">Alert if no breath detected for this duration</p>
+            </div>
+
+            <div class="control-group">
+              <label class="toggle-label">
+                <span>Enable alerts (sound + popup)</span>
+                <div class="toggle-switch">
+                  <input type="checkbox" id="alerts-toggle" checked>
+                  <span class="slider-toggle"></span>
+                </div>
+              </label>
+              <p class="hint">Turn off to silence all notifications</p>
+            </div>
+
+            <div class="control-group">
+              <label class="toggle-label">
+                <span>Detect continuous crying</span>
+                <div class="toggle-switch">
+                  <input type="checkbox" id="cry-toggle" checked>
+                  <span class="slider-toggle"></span>
+                </div>
+              </label>
+            </div>
+
+            <div class="control-group">
+              <label for="cry-duration-slider">Cry must last (seconds)</label>
+              <div class="slider-row">
+                <input type="range" id="cry-duration-slider" min="2" max="15" step="1" value="4" />
+                <span id="cry-duration-value" class="slider-value">4s</span>
+              </div>
+              <p class="hint">Ignore short noises — only alert for sustained crying</p>
+            </div>
+
+            <div class="control-group">
+              <label class="toggle-label">
+                <span>Listen to filtered audio (headphones!)</span>
+                <div class="toggle-switch">
+                  <input type="checkbox" id="monitor-toggle" checked>
+                  <span class="slider-toggle"></span>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <!-- Presets -->
+          <div class="card preset-card">
+            <h3>Presets</h3>
+            <div class="control-group">
+              <div class="select-wrapper">
+                <select id="preset-select">
+                  <option value="" disabled selected>Load a preset...</option>
+                </select>
+              </div>
+            </div>
+            <div class="preset-actions">
+              <button id="load-preset-btn" class="secondary-btn small" disabled>Load</button>
+              <button id="save-preset-btn" class="secondary-btn small accent">💾 Save Current</button>
+              <button id="delete-preset-btn" class="secondary-btn small danger" disabled>Delete</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right column: Visualizers -->
+        <div class="visualizer-column">
+          <!-- Breathing status hero -->
+          <div class="card breath-status-card" id="breath-status-card">
+            <div class="breath-status-content">
+              <div class="breath-icon" id="breath-icon">😴</div>
+              <div class="breath-info">
+                <span class="breath-label" id="breath-label">Waiting...</span>
+                <span class="breath-detail" id="breath-detail">Press Start to begin monitoring</span>
+              </div>
+            </div>
+            <div class="breath-meter-container">
+              <div class="breath-meter-bar" id="breath-meter-bar"></div>
+              <div class="breath-threshold-line" id="breath-threshold-line"></div>
+            </div>
+            <div class="breath-stats">
+              <div class="stat">
+                <span class="stat-label">Breaths/min</span>
+                <span class="stat-value" id="bpm-value">—</span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">Last breath</span>
+                <span class="stat-value" id="last-breath-value">—</span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">Silence</span>
+                <span class="stat-value" id="silence-value">—</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Cry status -->
+          <div class="card cry-status-card" id="cry-status-card">
+            <div class="breath-status-content">
+              <div class="breath-icon" id="cry-icon">🤫</div>
+              <div class="breath-info">
+                <span class="breath-label" id="cry-label">Quiet</span>
+                <span class="breath-detail" id="cry-detail">No crying detected</span>
+              </div>
+            </div>
+            <div class="breath-meter-container">
+              <div class="breath-meter-bar" id="cry-meter-bar" style="background:var(--accent-yellow)"></div>
+            </div>
+          </div>
+
+          <!-- Filtered waveform -->
+          <div class="card visualizer-card">
+            <div class="visualizer-header">
+              <h3>Filtered Waveform (breathing only)</h3>
+              <span class="status-dot" id="status-dot"></span>
+            </div>
+            <canvas id="waveform-canvas"></canvas>
+          </div>
+
+          <!-- Frequency spectrum -->
+          <div class="card visualizer-card">
+            <div class="visualizer-header">
+              <h3>Frequency Spectrum</h3>
+              <span class="freq-legend">
+                <span class="legend-item"><span class="dot fan"></span>Fan</span>
+                <span class="legend-item"><span class="dot breath"></span>Breathing</span>
+                <span class="legend-item"><span class="dot noise"></span>White noise</span>
+              </span>
+            </div>
+            <canvas id="spectrum-canvas"></canvas>
+          </div>
+
+          <!-- Breathing history -->
+          <div class="card visualizer-card">
+            <div class="visualizer-header">
+              <h3>Breath History (last 60s)</h3>
+            </div>
+            <canvas id="history-canvas"></canvas>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- Alert overlay -->
+    <div class="alert-overlay" id="alert-overlay">
+      <div class="alert-box">
+        <div class="alert-icon">⚠️</div>
+        <h2>No Breathing Detected!</h2>
+        <p id="alert-message">No breath detected for 15 seconds.</p>
+        <button class="primary-btn" id="dismiss-alert-btn">Dismiss</button>
+      </div>
+    </div>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
