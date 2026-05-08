@@ -1,0 +1,14 @@
+{
+  "name": "Monitor de Respiração do Bebê",
+  "short_name": "Baby Monitor",
+  "description": "Monitor inteligente de respiração e choro do bebê com IA",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0c1222",
+  "theme_color": "#6366f1",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

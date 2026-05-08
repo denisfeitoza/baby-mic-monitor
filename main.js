@@ -20,6 +20,7 @@ const savePresetBtn = $('save-preset-btn'), deletePresetBtn = $('delete-preset-b
 const cryToggle = $('cry-toggle'), cryDurationSlider = $('cry-duration-slider'), cryDurationValue = $('cry-duration-value');
 const cryStatusCard = $('cry-status-card'), cryIcon = $('cry-icon'), cryLabel = $('cry-label'), cryDetail = $('cry-detail'), cryMeterBar = $('cry-meter-bar');
 const modelBadge = $('model-badge');
+const crySensitivitySlider = $('cry-sensitivity-slider'), crySensitivityValue = $('cry-sensitivity-value');
 const sleepStageCard = $('sleep-stage-card'), sleepIcon = $('sleep-icon'), sleepLabel = $('sleep-label'), sleepDetail = $('sleep-detail');
 const avgBpmValue = $('avg-bpm-value'), avgIntervalValue = $('avg-interval-value'), breathVariabilityValue = $('breath-variability-value');
 const waveformCanvas = $('waveform-canvas'), spectrumCanvas = $('spectrum-canvas'), historyCanvas = $('history-canvas');
@@ -31,7 +32,7 @@ let highpassFilter=null, lowpassFilter=null, analyserFiltered=null, analyserRaw=
 let isRunning=false, animationId=null, historyInterval=null;
 let lastBreathTime=0, breathTimestamps=[], breathHistory=[], isCurrentlyBreathing=false;
 let alertFired=false, alertOscillator=null, alertGainNode=null;
-let cryStartTime=0, isCrying=false, cryAlertFired=false;
+let cryAlertFired=false;
 const HISTORY_LENGTH = 600;
 const STORAGE_KEY = 'bbm_presets';
 let sleepInterval = null;
@@ -40,8 +41,8 @@ let sleepInterval = null;
 let rawAudioBuffer = null, rawBufferPos = 0, rawSampleRate = 48000;
 let scriptNode = null, silentGainNode = null, yamnetInterval = null;
 let consecutiveCryFrames = 0;
-const YAMNET_INTERVAL_MS = 1500; // run inference every 1.5s
-const CRY_SCORE_THRESHOLD = 0.12;
+const YAMNET_INTERVAL_MS = 1500;
+let wakeLockSentinel = null;
 // Moving average: store detected breath timestamps for 5-min window
 // Sleep stage is estimated every 10s from this data
 
@@ -63,7 +64,7 @@ async function getDevices() {
     micSelect.innerHTML = '';
     devs.forEach((d,i) => { const o = document.createElement('option'); o.value = d.deviceId; o.text = d.label || `Mic ${i+1}`; micSelect.appendChild(o); });
     s.getTracks().forEach(t => t.stop());
-  } catch(e) { micSelect.innerHTML = '<option value="">Permission denied</option>'; }
+  } catch(e) { micSelect.innerHTML = '<option value="">Permissão negada</option>'; }
 }
 
 // ── Slider bindings ─────────────────────────────────────────────
@@ -74,7 +75,33 @@ thresholdSlider.oninput = e => { thresholdValue.textContent = e.target.value; up
 alertSlider.oninput = e => { alertValue.textContent = `${e.target.value}s`; };
 monitorToggle.onchange = e => { if(!gainNode||!audioContext) return; if(e.target.checked) gainNode.connect(audioContext.destination); else try{gainNode.disconnect(audioContext.destination);}catch(_){} };
 cryDurationSlider.oninput = e => { cryDurationValue.textContent = `${e.target.value}s`; };
+crySensitivitySlider.oninput = e => { crySensitivityValue.textContent = `${e.target.value}%`; };
+function getCrySensitivity() { return parseInt(crySensitivitySlider.value) / 100; }
 function updateThresholdLine() { breathThresholdLine.style.left = `${Math.min((parseInt(thresholdSlider.value)/40)*100,100)}%`; }
+
+// ── Wake Lock (keep screen on) ─────────────────────────────────
+async function requestWakeLock() {
+  if (!('wakeLock' in navigator)) return;
+  try { wakeLockSentinel = await navigator.wakeLock.request('screen'); } catch(_) {}
+}
+async function releaseWakeLock() {
+  if (wakeLockSentinel) { await wakeLockSentinel.release().catch(()=>{}); wakeLockSentinel = null; }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && isRunning) requestWakeLock();
+});
+
+// ── Notifications ───────────────────────────────────────────
+async function requestNotificationPermission() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    await Notification.requestPermission();
+  }
+}
+function sendSystemNotification(title, body) {
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try { new Notification(title, { body, icon: '/icon-192.png', tag: 'baby-alert', renotify: true }); } catch(_) {}
+  }
+}
 
 // ── Start / Stop ────────────────────────────────────────────────
 startBtn.onclick = () => isRunning ? stopAudio() : startAudio();
@@ -121,15 +148,17 @@ async function startAudio() {
     };
 
     isRunning=true; lastBreathTime=performance.now(); breathTimestamps=[]; breathHistory=new Array(HISTORY_LENGTH).fill(0); alertFired=false;
-    cryStartTime=0; isCrying=false; cryAlertFired=false; consecutiveCryFrames=0;
+    cryAlertFired=false; consecutiveCryFrames=0;
     startBtn.textContent='⏹ Parar Monitoramento'; startBtn.classList.add('active'); statusDot.classList.add('active');
     autodetectBtn.disabled=false;
     resizeAllCanvases(); updateThresholdLine(); drawLoop();
     historyInterval = setInterval(()=>{ if(!isRunning||!analyserFiltered) return; breathHistory.push(getFilteredAmplitude()); if(breathHistory.length>HISTORY_LENGTH) breathHistory.shift(); }, 100);
     sleepInterval = setInterval(() => { updateSleepStage(); updateTrend(); }, 10000);
-
-    // YAMNet inference loop
     yamnetInterval = setInterval(runYamnetInference, YAMNET_INTERVAL_MS);
+
+    // Keep screen on + request notifications
+    requestWakeLock();
+    requestNotificationPermission();
   } catch(e) { alert('Não foi possível iniciar: '+e.message); }
 }
 
@@ -149,6 +178,7 @@ function stopAudio() {
   breathMeterBar.style.width='0%'; bpmValue.textContent='—'; lastBreathValue.textContent='—'; silenceValue.textContent='—';
   cryStatusCard.className='card cry-status-card'; cryIcon.textContent='🤫'; cryLabel.textContent='Silencioso'; cryDetail.textContent='Nenhum choro detectado'; cryMeterBar.style.width='0%';
   consecutiveCryFrames = 0;
+  releaseWakeLock();
 }
 
 // ── Breath detection ────────────────────────────────────────────
@@ -197,7 +227,7 @@ async function runYamnetInference() {
     const pct = Math.min(result.score * 100 / 0.5, 100);
     cryMeterBar.style.width = `${pct}%`;
 
-    if (result.score > CRY_SCORE_THRESHOLD) {
+    if (result.score > getCrySensitivity()) {
       consecutiveCryFrames++;
       const requiredFrames = Math.ceil(parseInt(cryDurationSlider.value) / (YAMNET_INTERVAL_MS / 1000));
       if (consecutiveCryFrames >= requiredFrames) {
@@ -211,6 +241,7 @@ async function runYamnetInference() {
           alertMessage.textContent = `Bebê chorando! ${result.label} detectado por ${secs}s+ (confiança: ${(result.bestRaw*100).toFixed(0)}%)`;
           alertOverlay.classList.add('visible');
           playAlertSound();
+          sendSystemNotification('😭 Bebê chorando!', `${result.label} — ${(result.bestRaw*100).toFixed(0)}% confiança — ${secs}s`);
         }
       } else {
         cryStatusCard.className = 'card cry-status-card';
@@ -257,6 +288,7 @@ function processCryFallback() {
         cryAlertFired = true;
         alertMessage.textContent = 'Bebê chorando! Choro contínuo detectado.';
         alertOverlay.classList.add('visible'); playAlertSound();
+        sendSystemNotification('😭 Bebê chorando!', 'Choro contínuo detectado (modo amplitude)');
       }
     } else {
       cryIcon.textContent = '👶'; cryLabel.textContent = 'Som alto...';
@@ -442,7 +474,7 @@ let detectedNoiseBands = null;
 function drawLoop(){if(!isRunning)return;animationId=requestAnimationFrame(drawLoop);processBreathDetection(getFilteredAmplitude());processCryDetection();drawWaveform();drawSpectrum();drawHistory();drawTrend();}
 
 // ── Alert ───────────────────────────────────────────────────────
-function triggerAlert(s){alertMessage.textContent=`Nenhuma respiração detectada por ${s} segundos.`;alertOverlay.classList.add('visible');playAlertSound();}
+function triggerAlert(s){alertMessage.textContent=`Nenhuma respiração detectada por ${s} segundos.`;alertOverlay.classList.add('visible');playAlertSound();sendSystemNotification('🚨 Alerta de respiração!',`Nenhuma respiração detectada por ${s}s`);}
 let alertBeepInterval = null;
 function playAlertSound(){
   if(!audioContext||audioContext.state==='closed') return;
