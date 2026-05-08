@@ -275,18 +275,19 @@ function drawHistory(){
 }
 
 // ── Auto-Detect Algorithm ───────────────────────────────────────
-// 60s scan to capture slow sleeping breaths (~20s apart).
-// Temporarily cranks gain to max for faint signals.
-// Uses relative thresholds (no absolute values) so it works
-// regardless of mic distance. After detection, calculates
-// optimal gain and applies it along with filters.
+// 60s scan. analyserRaw is pre-gain so gain doesn't affect detection.
+// After finding breathing band, measures filtered amplitude and
+// calculates optimal gain. Mutes listen during scan.
 let scanData = null;
-let preAutoGain = null; // stores user's gain before scan
+let preAutoListenState = false;
+const scanBanner = $('scan-banner'), scanBannerTitle = $('scan-banner-title');
+const scanBannerDetail = $('scan-banner-detail'), scanBannerTime = $('scan-banner-time');
+const scanBannerFill = $('scan-banner-fill');
 
 autodetectBtn.onclick = () => {
   if(!isRunning||!analyserRaw) return;
-  const SCAN_DURATION = 60000; // 60 seconds
-  const SAMPLE_INTERVAL = 150; // ms between samples
+  const SCAN_DURATION = 60000;
+  const SAMPLE_INTERVAL = 150;
   const BAND_WIDTH = 50;
   const MAX_FREQ = 3000;
   const sr = audioContext.sampleRate;
@@ -296,18 +297,23 @@ autodetectBtn.onclick = () => {
 
   scanData = Array.from({length: numBands}, () => []);
 
-  // Save current gain and crank to max for best signal capture
-  preAutoGain = parseFloat(gainSlider.value);
-  const maxGain = 30;
-  gainNode.gain.setTargetAtTime(maxGain, audioContext.currentTime, 0.05);
-  gainSlider.value = maxGain;
-  gainValue.textContent = `${maxGain}x`;
+  // Mute listen (gain will be adjusted later, don't blast ears)
+  preAutoListenState = monitorToggle.checked;
+  if(preAutoListenState) {
+    try { gainNode.disconnect(audioContext.destination); } catch(_) {}
+    monitorToggle.checked = false;
+    monitorToggle.disabled = true;
+  }
+
+  // Show banner
+  scanBanner.classList.add('active');
+  scanBannerTitle.textContent = '🔍 Auto-Detect Active';
+  scanBannerDetail.textContent = 'Analyzing breathing patterns... Audio muted.';
 
   autodetectBtn.classList.add('scanning');
-  autodetectBtn.textContent = '🔍 Scanning... (~60s)';
   autodetectBtn.disabled = true;
   autodetectProgress.classList.add('active');
-  autodetectHint.textContent = 'Gain maxed out. Listening for breathing patterns (~60s)...';
+  autodetectHint.textContent = 'Scanning spectrum for breathing...';
 
   const startTime = performance.now();
   const data = new Uint8Array(bufLen);
@@ -316,10 +322,11 @@ autodetectBtn.onclick = () => {
     const elapsed = performance.now() - startTime;
     const pct = Math.min((elapsed / SCAN_DURATION) * 100, 100);
     autodetectBar.style.width = `${pct}%`;
+    scanBannerFill.style.width = `${pct}%`;
 
-    // Update countdown in button
     const remaining = Math.ceil((SCAN_DURATION - elapsed) / 1000);
     autodetectBtn.textContent = `🔍 Scanning... ${remaining}s`;
+    scanBannerTime.textContent = `${remaining}s`;
 
     if(elapsed >= SCAN_DURATION) {
       clearInterval(interval);
@@ -343,7 +350,6 @@ autodetectBtn.onclick = () => {
 function finishAutoDetect() {
   const BAND_WIDTH_HZ = 50;
 
-  // Calculate stats for each band
   const bandScores = scanData.map((samples, idx) => {
     if(samples.length < 5) return { idx, cv: 0, mean: 0, max: 0, type: 'quiet' };
     const mean = samples.reduce((a,b) => a+b, 0) / samples.length;
@@ -353,25 +359,19 @@ function finishAutoDetect() {
     return { idx, cv: mean > 0.5 ? std / mean : 0, mean, max };
   });
 
-  // Find overall noise floor (median of all band means)
   const sortedMeans = bandScores.map(b => b.mean).sort((a,b) => a - b);
   const noiseFloor = sortedMeans[Math.floor(sortedMeans.length * 0.25)] || 0;
-
-  // Use relative threshold: only consider bands above noise floor
   const activeBands = bandScores.filter(b => b.mean > noiseFloor * 0.3 || b.max > noiseFloor * 2);
 
   const sortedByCv = [...activeBands].sort((a, b) => b.cv - a.cv);
   const topCv = sortedByCv.length > 0 ? sortedByCv[0].cv : 0;
 
   if(topCv < 0.03) {
-    autodetectHint.textContent = '❌ No rhythmic pattern found. Try moving mic closer to baby.';
-    // Restore previous gain
-    gainNode.gain.setTargetAtTime(preAutoGain, audioContext.currentTime, 0.05);
-    gainSlider.value = preAutoGain; gainValue.textContent = `${preAutoGain}x`;
-    resetAutoDetectUI(); return;
+    autodetectHint.textContent = '❌ No rhythmic pattern found. Try moving mic closer.';
+    scanBannerDetail.textContent = '❌ Failed — no pattern found';
+    restoreAfterScan(); return;
   }
 
-  // Classify bands relative to each other (no absolute thresholds)
   const cvThreshold = topCv * 0.35;
   const activeMeans = activeBands.map(b => b.mean);
   const avgActiveMean = activeMeans.length > 0 ? activeMeans.reduce((a,b) => a+b, 0) / activeMeans.length : 0;
@@ -385,13 +385,11 @@ function finishAutoDetect() {
 
   const breathBands = detectedNoiseBands.filter(b => b.type === 'breathing').map(b => b.idx).sort((a,b) => a - b);
   if(breathBands.length === 0) {
-    autodetectHint.textContent = '❌ Could not isolate breathing. Try repositioning mic.';
-    gainNode.gain.setTargetAtTime(preAutoGain, audioContext.currentTime, 0.05);
-    gainSlider.value = preAutoGain; gainValue.textContent = `${preAutoGain}x`;
-    resetAutoDetectUI(); return;
+    autodetectHint.textContent = '❌ Could not isolate breathing.';
+    scanBannerDetail.textContent = '❌ Failed — try repositioning mic';
+    restoreAfterScan(); return;
   }
 
-  // Find largest contiguous cluster
   let bestStart = breathBands[0], bestEnd = breathBands[0], curStart = breathBands[0], curEnd = breathBands[0];
   for(let i = 1; i < breathBands.length; i++) {
     if(breathBands[i] - curEnd <= 2) { curEnd = breathBands[i]; }
@@ -399,44 +397,74 @@ function finishAutoDetect() {
   }
   if(curEnd - curStart > bestEnd - bestStart) { bestStart = curStart; bestEnd = curEnd; }
 
-  // Set filters
   let hpFreq = Math.max(50, bestStart * BAND_WIDTH_HZ - 30);
   let lpFreq = Math.min(4000, (bestEnd + 1) * BAND_WIDTH_HZ + 30);
   hpFreq = Math.max(50, Math.min(500, Math.round(hpFreq / 10) * 10));
   lpFreq = Math.max(500, Math.min(4000, Math.round(lpFreq / 50) * 50));
 
+  // Apply filters
   highpassSlider.value = hpFreq; highpassValue.textContent = `${hpFreq} Hz`;
   if(highpassFilter) highpassFilter.frequency.setTargetAtTime(hpFreq, audioContext.currentTime, 0.05);
   lowpassSlider.value = lpFreq; lowpassValue.textContent = `${lpFreq} Hz`;
   if(lowpassFilter) lowpassFilter.frequency.setTargetAtTime(lpFreq, audioContext.currentTime, 0.05);
 
-  // Calculate optimal gain: we want breathing peaks to reach ~15-20 on the
-  // filtered amplitude scale. Estimate breathing amplitude from detected bands.
-  const breathBandData = detectedNoiseBands.filter(b => b.type === 'breathing');
-  const avgBreathMean = breathBandData.reduce((a,b) => a + b.mean, 0) / breathBandData.length;
-  const avgBreathMax = breathBandData.reduce((a,b) => a + b.max, 0) / breathBandData.length;
-  // Signal was captured at 30x gain. Scale to target ~18 amplitude.
-  const targetAmplitude = 18;
-  const currentAmplitudeEstimate = avgBreathMax / 10; // rough mapping
-  let optimalGain = currentAmplitudeEstimate > 0 ? Math.round((targetAmplitude / currentAmplitudeEstimate) * 2) / 2 : preAutoGain;
-  optimalGain = Math.max(1, Math.min(30, optimalGain));
+  // Now measure FILTERED amplitude to set optimal gain.
+  // Wait 500ms for filters to settle, then sample for 3s.
+  scanBannerDetail.textContent = '⚙️ Calibrating gain...';
+  setTimeout(() => {
+    const samples = [];
+    const gainCalibInterval = setInterval(() => {
+      samples.push(getFilteredAmplitude());
+    }, 100);
+    setTimeout(() => {
+      clearInterval(gainCalibInterval);
+      if(samples.length > 0) {
+        // Get the peak amplitude (breathing peaks)
+        const sorted = [...samples].sort((a,b) => b - a);
+        const peakAvg = sorted.slice(0, Math.max(3, Math.floor(sorted.length * 0.1)))
+                              .reduce((a,b) => a+b, 0) / Math.max(3, Math.floor(sorted.length * 0.1));
+        const currentGain = parseFloat(gainSlider.value);
+        // Target: breathing peaks at ~12-15 on the amplitude scale
+        const targetPeak = 13;
+        if(peakAvg > 0.5) {
+          let optimalGain = Math.round((targetPeak / peakAvg) * currentGain * 2) / 2;
+          optimalGain = Math.max(1, Math.min(30, optimalGain));
+          gainNode.gain.setTargetAtTime(optimalGain, audioContext.currentTime, 0.05);
+          gainSlider.value = optimalGain; gainValue.textContent = `${optimalGain}x`;
+        }
+        // else: signal too weak even after filtering, keep current gain
+      }
 
-  gainNode.gain.setTargetAtTime(optimalGain, audioContext.currentTime, 0.05);
-  gainSlider.value = optimalGain; gainValue.textContent = `${optimalGain}x`;
+      // Report
+      const noiseBands = detectedNoiseBands.filter(b => b.type === 'noise');
+      const noiseRanges = [];
+      if (noiseBands.length > 0) {
+        let rs = noiseBands[0].idx, re = noiseBands[0].idx;
+        for (let i = 1; i < noiseBands.length; i++) {
+          if (noiseBands[i].idx - re <= 1) { re = noiseBands[i].idx; } else { noiseRanges.push(`${rs*BAND_WIDTH_HZ}-${(re+1)*BAND_WIDTH_HZ}Hz`); rs = re = noiseBands[i].idx; }
+        }
+        noiseRanges.push(`${rs*BAND_WIDTH_HZ}-${(re+1)*BAND_WIDTH_HZ}Hz`);
+      }
+      const noiseInfo = noiseRanges.length > 0 ? ` | Noise: ${noiseRanges.join(', ')}` : '';
+      const finalGain = parseFloat(gainSlider.value);
+      autodetectHint.textContent = `✅ Breathing: ${hpFreq}–${lpFreq} Hz | Gain: ${finalGain}x${noiseInfo}`;
+      scanBannerDetail.textContent = `✅ Done! Filters: ${hpFreq}–${lpFreq} Hz, Gain: ${finalGain}x`;
 
-  // Report noise zones
-  const noiseBands = detectedNoiseBands.filter(b => b.type === 'noise');
-  const noiseRanges = [];
-  if (noiseBands.length > 0) {
-    let rs = noiseBands[0].idx, re = noiseBands[0].idx;
-    for (let i = 1; i < noiseBands.length; i++) {
-      if (noiseBands[i].idx - re <= 1) { re = noiseBands[i].idx; } else { noiseRanges.push(`${rs*BAND_WIDTH_HZ}-${(re+1)*BAND_WIDTH_HZ}Hz`); rs = re = noiseBands[i].idx; }
-    }
-    noiseRanges.push(`${rs*BAND_WIDTH_HZ}-${(re+1)*BAND_WIDTH_HZ}Hz`);
+      restoreAfterScan();
+    }, 3000); // 3s calibration
+  }, 500); // 500ms filter settle
+}
+
+function restoreAfterScan() {
+  // Restore listen state
+  monitorToggle.disabled = false;
+  if(preAutoListenState) {
+    monitorToggle.checked = true;
+    gainNode.connect(audioContext.destination);
   }
-  const noiseInfo = noiseRanges.length > 0 ? ` | Noise: ${noiseRanges.join(', ')}` : '';
-  autodetectHint.textContent = `✅ Breathing: ${hpFreq}–${lpFreq} Hz | Gain: ${optimalGain}x${noiseInfo}`;
   resetAutoDetectUI();
+  // Hide banner after 3s
+  setTimeout(() => { scanBanner.classList.remove('active'); scanBannerFill.style.width = '0%'; }, 3000);
 }
 
 function resetAutoDetectUI() {
